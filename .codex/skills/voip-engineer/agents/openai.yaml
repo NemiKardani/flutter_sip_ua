@@ -1,0 +1,7 @@
+interface:
+  display_name: "VoIP Engineer"
+  short_description: "Protocol and call-stack context"
+  default_prompt: "Use $voip-engineer to reason about SIP, RTP, SDP, NAT, and telephony framework tradeoffs for this task."
+
+policy:
+  allow_implicit_invocation: true

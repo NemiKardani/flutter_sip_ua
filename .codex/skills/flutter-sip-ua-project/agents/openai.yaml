@@ -1,0 +1,7 @@
+interface:
+  display_name: "Flutter SIP UA Project"
+  short_description: "Compact architecture map for this repo"
+  default_prompt: "Use $flutter-sip-ua-project to understand the flutter_sip_ua repository before making changes."
+
+policy:
+  allow_implicit_invocation: true

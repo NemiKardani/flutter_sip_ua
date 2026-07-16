@@ -124,7 +124,7 @@ class ActiveCallActions extends StatelessWidget {
   final VoidCallback onHold;
   final VoidCallback onSpeaker;
   final VoidCallback onKeypad;
-  final VoidCallback onTransfer;
+  final VoidCallback? onTransfer;
   final VoidCallback onRecord;
   final VoidCallback onAddCall;
   final VoidCallback onToggleStats;

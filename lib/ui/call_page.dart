@@ -36,8 +36,8 @@ class _CallPageState extends ConsumerState<CallPage>
   Duration _elapsed = Duration.zero;
   DateTime? _activeSince;
 
-  // UI-only toggles (Transfer / Record / Add-call have user-facing
-  // fallbacks since the UA doesn't yet implement REFER/conference).
+  // UI-only toggles (Record / Add-call have user-facing fallbacks since the
+  // UA does not yet implement recording/conference control).
   bool _muted = false;
   bool _speaker = false;
   bool _showKeypad = false;
@@ -137,10 +137,15 @@ class _CallPageState extends ConsumerState<CallPage>
   Future<void> _onTransfer() async {
     final req = await TransferSheet.show(context);
     if (req == null || !mounted) return;
+    if (req.attended) {
+      _toast('Attended transfer is not available yet');
+      return;
+    }
+    final sent = _ua.transferCall(widget.callId, req.target);
     _toast(
-      req.attended
-          ? 'Attended transfer to ${req.target} not yet implemented'
-          : 'Blind transfer to ${req.target} not yet implemented',
+      sent
+          ? 'Transfer request sent to ${req.target}'
+          : 'Cannot transfer this call right now',
     );
   }
 
@@ -285,7 +290,7 @@ class _CallPageState extends ConsumerState<CallPage>
           onHold: _toggleHold,
           onSpeaker: _toggleSpeaker,
           onKeypad: _toggleKeypad,
-          onTransfer: _onTransfer,
+          onTransfer: c.transferPending ? null : _onTransfer,
           onRecord: _toggleRecording,
           onAddCall: _onAddCall,
           onToggleStats: _toggleStats,

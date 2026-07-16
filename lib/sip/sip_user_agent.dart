@@ -8,7 +8,7 @@
 ///   * REGISTER with MD5 / qop=auth digest, expires negotiation, refresh.
 ///   * OPTIONS keep-alive (and answering inbound OPTIONS qualifies).
 ///   * MESSAGE (out-of-dialog).
-///   * INVITE / 200 OK / ACK / BYE / CANCEL with a real G.711/RTP media
+///   * INVITE / 200 OK / ACK / BYE / CANCEL / REFER with a real G.711/RTP media
 ///     session (mic capture + μ-law/A-law encode + RTP send via the
 ///     pure-Dart packetizer under `audio/`).
 ///   * RFC 4028 Session Timers: Session-Expires / Min-SE negotiation,
@@ -67,6 +67,10 @@ class SipCall {
   /// internal context held flag and is updated before [_emitCall] so the
   /// UI sees the change reactively.
   bool held = false;
+
+  /// True after an in-dialog RFC 3515 REFER has been sent and until the
+  /// transfer is accepted, rejected, or the dialog ends.
+  bool transferPending = false;
 }
 
 class SipAccount {
@@ -129,11 +133,13 @@ class SipUserAgent {
     AudioSink Function()? audioSinkFactory,
     String? publicMediaAddress,
     RtpPacketTap? rtpPacketTap,
+    SipTransport Function(Uri serverUri)? transportFactory,
   }) : _rng = rng ?? Random.secure(),
        _digest = DigestClient(),
        _audioSinkFactory = audioSinkFactory,
        _publicMediaAddress = publicMediaAddress,
-       _rtpPacketTap = rtpPacketTap;
+       _rtpPacketTap = rtpPacketTap,
+       _transportFactory = transportFactory ?? SipTransport.forUri;
 
   final Random _rng;
   final DigestClient _digest;
@@ -148,6 +154,7 @@ class SipUserAgent {
 
   /// Optional RTP/RTCP packet tap. See [RtpPacketTap].
   final RtpPacketTap? _rtpPacketTap;
+  final SipTransport Function(Uri serverUri) _transportFactory;
 
   /// Optional sink that records every wire-format SIP message to disk.
   /// Set with [attachFileLogger] before calling [start] for full coverage.
@@ -207,7 +214,7 @@ class SipUserAgent {
   Future<void> start(SipAccount account) async {
     await stop();
     _account = account;
-    final transport = SipTransport.forUri(account.serverUri);
+    final transport = _transportFactory(account.serverUri);
     _transport = transport;
     _stateSub = transport.state.listen(_onTransportState);
     _msgSub = transport.messages.listen(_onMessage);
@@ -379,6 +386,62 @@ class SipUserAgent {
 
   /// Whether [callId] is currently on hold.
   bool? isHeld(String callId) => _calls[callId]?.held;
+
+  /// Request a blind transfer of an active call using RFC 3515 REFER.
+  ///
+  /// The peer/PBX completes the new call and then tears down this dialog;
+  /// this client deliberately does not send BYE optimistically. Returns
+  /// `false` when there is no active dialog or SIP transport to transfer.
+  bool transferCall(String callId, String target) {
+    final ctx = _calls[callId];
+    final acc = _account;
+    final tx = _transport;
+    if (target.trim().isEmpty) return false;
+    if (ctx == null ||
+        acc == null ||
+        tx == null ||
+        !tx.isConnected ||
+        ctx.call.state != CallState.active ||
+        ctx.transferPending) {
+      return false;
+    }
+
+    final targetUri = _normaliseTarget(target, acc.domain);
+    final remoteTarget = ctx.remoteContact ?? ctx.call.remoteParty;
+    final refer = _buildRequest(
+      method: 'REFER',
+      requestUri: remoteTarget,
+      callId: ctx.call.id,
+      fromTag: ctx.localTag,
+      cseq: _nextCseq(),
+      branch: _branch(),
+      target: remoteTarget,
+      account: acc,
+      toTag: ctx.remoteTag,
+      toDialogUri: ctx.call.remoteParty,
+      routeSet: ctx.routeSet,
+      extra: {
+        'Refer-To': '<$targetUri>',
+        'Referred-By': '<${acc.aor}>',
+        // We show the REFER response directly, so avoid an unnecessary
+        // refer-event subscription for the blind-transfer flow.
+        'Refer-Sub': 'false',
+      },
+    );
+    ctx.transferPending = true;
+    ctx.call.transferPending = true;
+    _emitCall(ctx.call);
+    try {
+      _send(refer);
+      return true;
+    } catch (e) {
+      ctx.transferPending = false;
+      ctx.call.transferPending = false;
+      _emitCall(ctx.call);
+      _log('transfer: failed to send REFER: $e');
+      return false;
+    }
+  }
 
   void hangup(String callId) {
     final ctx = _calls[callId];
@@ -700,6 +763,18 @@ class SipUserAgent {
         _retryInviteWith422(ctx, msg);
       } else {
         _markEnded(ctx);
+      }
+    } else if (cseqMethod == 'REFER') {
+      if (code < 200) return;
+      ctx.transferPending = false;
+      ctx.call.transferPending = false;
+      _emitCall(ctx.call);
+      if (code >= 200 && code < 300) {
+        _log('transfer: REFER accepted for ${ctx.call.id}');
+      } else {
+        _log(
+          'transfer: REFER rejected (${msg.statusCode} ${msg.reasonPhrase})',
+        );
       }
     } else if (cseqMethod == 'BYE' || cseqMethod == 'CANCEL') {
       _markEnded(ctx);
@@ -1092,7 +1167,7 @@ class SipUserAgent {
       extra: {
         'Expires': '$expires',
         'Allow':
-            'INVITE, ACK, CANCEL, BYE, MESSAGE, OPTIONS, NOTIFY, INFO, UPDATE',
+            'INVITE, ACK, CANCEL, BYE, REFER, MESSAGE, OPTIONS, NOTIFY, INFO, UPDATE',
         'Supported': 'timer, replaces',
       },
     );
@@ -1660,6 +1735,9 @@ class _CallContext {
   /// True once a hold re-INVITE has been sent and 200-OK confirmed (or
   /// optimistically, while the re-INVITE is in flight).
   bool held = false;
+
+  /// Tracks an in-flight blind REFER independently of the UI snapshot.
+  bool transferPending = false;
 
   /// Codec we agreed to use after the initial offer/answer. Used when a
   /// peer-initiated re-INVITE arrives so we re-emit an answer that's a
