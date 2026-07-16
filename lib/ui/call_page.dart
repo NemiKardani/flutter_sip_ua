@@ -138,7 +138,21 @@ class _CallPageState extends ConsumerState<CallPage>
     final req = await TransferSheet.show(context);
     if (req == null || !mounted) return;
     if (req.attended) {
-      _toast('Attended transfer is not available yet');
+      final consultation = await _ua.startAttendedTransfer(
+        widget.callId,
+        req.target,
+      );
+      if (!mounted) return;
+      if (consultation == null) {
+        _toast('Cannot start an attended transfer right now');
+        return;
+      }
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          settings: const RouteSettings(name: 'call'),
+          builder: (_) => CallPage(callId: consultation.id),
+        ),
+      );
       return;
     }
     final sent = _ua.transferCall(widget.callId, req.target);
@@ -147,6 +161,16 @@ class _CallPageState extends ConsumerState<CallPage>
           ? 'Transfer request sent to ${req.target}'
           : 'Cannot transfer this call right now',
     );
+  }
+
+  void _completeAttendedTransfer() {
+    final sent = _ua.completeAttendedTransfer(widget.callId);
+    _toast(
+      sent
+          ? 'Completing attended transfer'
+          : 'Cannot complete this transfer right now',
+    );
+    if (sent) Navigator.of(context).maybePop();
   }
 
   void _onAddCall() {
@@ -207,7 +231,10 @@ class _CallPageState extends ConsumerState<CallPage>
             constraints: BoxConstraints(minHeight: constraints.maxHeight),
             child: IntrinsicHeight(
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
@@ -230,10 +257,13 @@ class _CallPageState extends ConsumerState<CallPage>
                         padding: const EdgeInsets.only(top: 12),
                         child: Text(
                           _dtmfHistory,
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            letterSpacing: 4,
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                          ),
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                letterSpacing: 4,
+                                fontFeatures: const [
+                                  FontFeature.tabularFigures(),
+                                ],
+                              ),
                         ),
                       ),
                     if (_showStats && state == CallState.active)
@@ -291,6 +321,9 @@ class _CallPageState extends ConsumerState<CallPage>
           onSpeaker: _toggleSpeaker,
           onKeypad: _toggleKeypad,
           onTransfer: c.transferPending ? null : _onTransfer,
+          onCompleteTransfer: _ua.attendedTransferSourceFor(c.id) == null
+              ? null
+              : (c.transferPending ? null : _completeAttendedTransfer),
           onRecord: _toggleRecording,
           onAddCall: _onAddCall,
           onToggleStats: _toggleStats,

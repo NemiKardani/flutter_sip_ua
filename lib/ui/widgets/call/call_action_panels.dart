@@ -109,6 +109,7 @@ class ActiveCallActions extends StatelessWidget {
     required this.onSpeaker,
     required this.onKeypad,
     required this.onTransfer,
+    this.onCompleteTransfer,
     required this.onRecord,
     required this.onAddCall,
     required this.onToggleStats,
@@ -125,6 +126,7 @@ class ActiveCallActions extends StatelessWidget {
   final VoidCallback onSpeaker;
   final VoidCallback onKeypad;
   final VoidCallback? onTransfer;
+  final VoidCallback? onCompleteTransfer;
   final VoidCallback onRecord;
   final VoidCallback onAddCall;
   final VoidCallback onToggleStats;
@@ -174,9 +176,13 @@ class ActiveCallActions extends StatelessWidget {
                   onTap: onHold,
                 ),
                 CallExtraButton(
-                  icon: Icons.phone_forwarded,
-                  label: 'Transfer',
-                  onTap: onTransfer,
+                  icon: onCompleteTransfer == null
+                      ? Icons.phone_forwarded
+                      : Icons.call_merge,
+                  label: onCompleteTransfer == null
+                      ? 'Transfer'
+                      : 'Complete transfer',
+                  onTap: onCompleteTransfer ?? onTransfer,
                 ),
                 CallExtraButton(
                   icon: recording

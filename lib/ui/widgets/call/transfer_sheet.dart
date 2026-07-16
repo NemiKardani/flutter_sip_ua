@@ -12,9 +12,8 @@ class TransferRequest {
   final bool attended;
 }
 
-/// Browser-Phone style transfer bottom sheet. The current SIP stack supports
-/// blind RFC 3515 REFER transfers; attended transfer needs a consultation leg
-/// and Replaces dialog handling, so it remains unavailable for now.
+/// Browser-Phone style transfer bottom sheet. Supports blind and attended
+/// transfers; attended transfer starts a consultation call before completion.
 class TransferSheet extends StatefulWidget {
   const TransferSheet({super.key});
 
@@ -83,9 +82,9 @@ class _TransferSheetState extends State<TransferSheet> {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: null,
+                  onPressed: () => _submit(attended: true),
                   icon: const Icon(Icons.group_add),
-                  label: const Text('Attended soon'),
+                  label: const Text('Attended'),
                 ),
               ),
               const SizedBox(width: 12),

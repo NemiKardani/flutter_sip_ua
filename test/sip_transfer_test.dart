@@ -53,6 +53,85 @@ void main() {
       await transport.dispose();
     },
   );
+
+  test(
+    'completes an attended transfer with the source dialog in Replaces',
+    () async {
+      final transport = _FakeTransport();
+      final ua = SipUserAgent(transportFactory: (_) => transport);
+      await ua.start(
+        SipAccount(
+          username: '100',
+          password: 'secret',
+          domain: 'pbx.example.test',
+          serverUri: Uri.parse('ws://pbx.example.test/sip'),
+        ),
+      );
+
+      final source = await ua.makeCall('200');
+      expect(source, isNotNull);
+      final sourceInvite = transport.sent.lastWhere(
+        (m) => m.method == 'INVITE',
+      );
+      _acceptInvite(
+        transport,
+        sourceInvite,
+        remoteParty: '200',
+        contact: 'sip:200@media.example.test',
+        tag: 'source-tag',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final consultation = await ua.startAttendedTransfer(source!.id, '300');
+      expect(consultation, isNotNull);
+      expect(ua.callById(source.id)?.held, isTrue);
+      _acceptInvite(
+        transport,
+        transport.sent.lastWhere((m) => m.method == 'INVITE'),
+        remoteParty: '300',
+        contact: 'sip:300@media.example.test',
+        tag: 'consultation-tag',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(ua.completeAttendedTransfer(consultation!.id), isTrue);
+      final refer = transport.sent.lastWhere((m) => m.method == 'REFER');
+      final replaces = Uri.encodeQueryComponent(
+        '${source.id};to-tag=source-tag;from-tag=${sourceInvite.fromTag}',
+      );
+      expect(refer.requestUri, 'sip:300@media.example.test');
+      expect(
+        refer.header('Refer-To'),
+        '<sip:200@pbx.example.test?Replaces=$replaces>',
+      );
+
+      await ua.stop();
+      await transport.dispose();
+    },
+  );
+}
+
+void _acceptInvite(
+  _FakeTransport transport,
+  SipMessage invite, {
+  required String remoteParty,
+  required String contact,
+  required String tag,
+}) {
+  transport.receive(
+    SipMessage.response(
+      code: 200,
+      reason: 'OK',
+      headers: [
+        MapEntry('Via', invite.header('Via')!),
+        MapEntry('From', invite.header('From')!),
+        MapEntry('To', '<sip:$remoteParty@pbx.example.test>;tag=$tag'),
+        MapEntry('Call-ID', invite.callId!),
+        MapEntry('CSeq', invite.cseq!),
+        MapEntry('Contact', '<$contact>'),
+      ],
+    ),
+  );
 }
 
 class _FakeTransport implements SipTransport {

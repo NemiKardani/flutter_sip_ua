@@ -46,3 +46,11 @@ app.*.map.json
 
 # FVM Version Cache
 .fvm/
+.fvmrc
+pubspec.lock
+.vscode/settings.json
+ios/Flutter/Debug.xcconfig
+ios/Flutter/Release.xcconfig
+pubspec.lock
+ios/Flutter/Debug.xcconfig
+ios/Flutter/Release.xcconfig

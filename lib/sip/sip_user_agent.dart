@@ -387,6 +387,63 @@ class SipUserAgent {
   /// Whether [callId] is currently on hold.
   bool? isHeld(String callId) => _calls[callId]?.held;
 
+  /// Starts an attended transfer by holding [callId] and placing a
+  /// consultation call to [target]. Call [completeAttendedTransfer] once the
+  /// returned consultation call is active.
+  Future<SipCall?> startAttendedTransfer(String callId, String target) async {
+    final source = _calls[callId];
+    if (target.trim().isEmpty ||
+        source == null ||
+        source.call.state != CallState.active ||
+        source.transferPending ||
+        source.consultationCallId != null) {
+      return null;
+    }
+    if (!source.held && setHold(callId, true) == null) return null;
+
+    final consultation = await makeCall(target);
+    if (consultation == null) {
+      setHold(callId, false);
+      return null;
+    }
+    source.consultationCallId = consultation.id;
+    final consultationCtx = _calls[consultation.id];
+    if (consultationCtx != null) {
+      consultationCtx.transferSourceCallId = callId;
+    }
+    return consultation;
+  }
+
+  /// The held source call associated with an attended-transfer consultation
+  /// call, or `null` when [callId] is an ordinary call.
+  String? attendedTransferSourceFor(String callId) =>
+      _calls[callId]?.transferSourceCallId;
+
+  /// Completes an attended transfer by sending REFER on the consultation
+  /// dialog. RFC 3891's Replaces value tells the consultation party which
+  /// source dialog to replace when it INVITEs the original remote party.
+  bool completeAttendedTransfer(String consultationCallId) {
+    final consultation = _calls[consultationCallId];
+    final sourceId = consultation?.transferSourceCallId;
+    final source = sourceId == null ? null : _calls[sourceId];
+    if (consultation == null ||
+        source == null ||
+        consultation.call.state != CallState.active ||
+        source.call.state != CallState.active ||
+        !source.held ||
+        source.remoteTag == null) {
+      return false;
+    }
+
+    final replaces =
+        '${source.call.id};to-tag=${source.remoteTag};from-tag=${source.localTag}';
+    final referTo =
+        '${source.call.remoteParty}?Replaces=${Uri.encodeQueryComponent(replaces)}';
+    final sent = _sendRefer(consultation, referTo);
+    if (sent) source.attendedTransferCompleting = true;
+    return sent;
+  }
+
   /// Request a blind transfer of an active call using RFC 3515 REFER.
   ///
   /// The peer/PBX completes the new call and then tears down this dialog;
@@ -407,6 +464,19 @@ class SipUserAgent {
     }
 
     final targetUri = _normaliseTarget(target, acc.domain);
+    return _sendRefer(ctx, targetUri);
+  }
+
+  bool _sendRefer(_CallContext ctx, String referTo) {
+    final acc = _account;
+    final tx = _transport;
+    if (acc == null ||
+        tx == null ||
+        !tx.isConnected ||
+        ctx.call.state != CallState.active ||
+        ctx.transferPending) {
+      return false;
+    }
     final remoteTarget = ctx.remoteContact ?? ctx.call.remoteParty;
     final refer = _buildRequest(
       method: 'REFER',
@@ -421,7 +491,7 @@ class SipUserAgent {
       toDialogUri: ctx.call.remoteParty,
       routeSet: ctx.routeSet,
       extra: {
-        'Refer-To': '<$targetUri>',
+        'Refer-To': '<$referTo>',
         'Referred-By': '<${acc.aor}>',
         // We show the REFER response directly, so avoid an unnecessary
         // refer-event subscription for the blind-transfer flow.
@@ -772,6 +842,11 @@ class SipUserAgent {
       if (code >= 200 && code < 300) {
         _log('transfer: REFER accepted for ${ctx.call.id}');
       } else {
+        final sourceId = ctx.transferSourceCallId;
+        if (sourceId != null) {
+          final source = _calls[sourceId];
+          if (source != null) source.attendedTransferCompleting = false;
+        }
         _log(
           'transfer: REFER rejected (${msg.statusCode} ${msg.reasonPhrase})',
         );
@@ -1258,10 +1333,10 @@ class SipUserAgent {
     final tx = _transport!;
     final scheme = tx.protocol;
     final localHost = _localContactHost();
-    final fromDisplay =
-        account.displayName == null ? '' : '"${account.displayName}" ';
-    final toUri =
-        method == 'REGISTER' ? account.aor : (toDialogUri ?? target);
+    final fromDisplay = account.displayName == null
+        ? ''
+        : '"${account.displayName}" ';
+    final toUri = method == 'REGISTER' ? account.aor : (toDialogUri ?? target);
     final toLine = toTag == null ? '<$toUri>' : '<$toUri>;tag=$toTag';
 
     // RFC 3261 §12.2.1.1: apply route set.
@@ -1650,8 +1725,10 @@ class SipUserAgent {
   }
 
   static String? _extractBranch(String viaHeader) {
-    final m = RegExp(r'branch=([^\s;,>]+)', caseSensitive: false)
-        .firstMatch(viaHeader);
+    final m = RegExp(
+      r'branch=([^\s;,>]+)',
+      caseSensitive: false,
+    ).firstMatch(viaHeader);
     return m?.group(1);
   }
 
@@ -1671,6 +1748,30 @@ class SipUserAgent {
     ctx.call.endedAt = DateTime.now();
     _emitCall(ctx.call);
     _calls.remove(ctx.call.id);
+    _finishAttendedTransferContext(ctx);
+  }
+
+  void _finishAttendedTransferContext(_CallContext ctx) {
+    final sourceId = ctx.transferSourceCallId;
+    if (sourceId != null) {
+      final source = _calls[sourceId];
+      if (source != null) {
+        source.consultationCallId = null;
+        // A cancelled or failed consultation must not strand the original
+        // caller on hold. A successful attended transfer is ended by the PBX.
+        if (!source.attendedTransferCompleting &&
+            source.call.state == CallState.active &&
+            source.held) {
+          setHold(sourceId, false);
+        }
+      }
+    }
+
+    final consultationId = ctx.consultationCallId;
+    if (consultationId != null) {
+      final consultation = _calls[consultationId];
+      if (consultation != null) consultation.transferSourceCallId = null;
+    }
   }
 
   void _emitCall(SipCall call) => _callCtl.add(call);
@@ -1739,6 +1840,16 @@ class _CallContext {
   /// Tracks an in-flight blind REFER independently of the UI snapshot.
   bool transferPending = false;
 
+  /// The source dialog held while this call acts as the consultation leg.
+  String? transferSourceCallId;
+
+  /// Consultation dialog created while this call is held for an attended
+  /// transfer.
+  String? consultationCallId;
+
+  /// Prevents resuming the source after an accepted attended-transfer REFER.
+  bool attendedTransferCompleting = false;
+
   /// Codec we agreed to use after the initial offer/answer. Used when a
   /// peer-initiated re-INVITE arrives so we re-emit an answer that's a
   /// strict intersection (RFC 3264 §8) instead of a fresh full menu.
@@ -1799,10 +1910,10 @@ class _Retransmitter {
     required this.isInvite,
   }) {
     _arm(_t1Ms);
-    _timeoutTimer = Timer(
-      const Duration(milliseconds: _timeoutMs),
-      () { cancel(); onTimeout(); },
-    );
+    _timeoutTimer = Timer(const Duration(milliseconds: _timeoutMs), () {
+      cancel();
+      onTimeout();
+    });
   }
 
   final String raw;
