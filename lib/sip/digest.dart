@@ -46,6 +46,7 @@ class DigestClient {
 
   /// Builds the value (without the leading `Digest `) for an Authorization
   /// header given a [challenge] and credentials. The caller writes:
+  // ignore: unintended_html_in_doc_comment
   ///   Authorization: Digest <returned value>
   String authorize({
     required DigestChallenge challenge,

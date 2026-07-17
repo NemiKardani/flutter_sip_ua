@@ -5,5 +5,5 @@ SipTransport createTcpTransport({
   required int remotePort,
   required bool useTls,
 }) => throw UnsupportedError(
-      'TCP/TLS SIP transport is not supported on this platform',
-    );
+  'TCP/TLS SIP transport is not supported on this platform',
+);

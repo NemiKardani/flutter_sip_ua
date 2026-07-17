@@ -10,13 +10,14 @@ void main() {
     'sends an in-dialog blind REFER to the normalized destination',
     () async {
       final transport = _FakeTransport();
-      final ua = SipUserAgent(transportFactory: (_) => transport);
+      final ua = SipUserAgent(transportFactory: (uri, type) => transport);
       await ua.start(
         SipAccount(
           username: '100',
           password: 'secret',
           domain: 'pbx.example.test',
           serverUri: Uri.parse('ws://pbx.example.test/sip'),
+          transportType: SipTransportType.ws,
         ),
       );
 
@@ -58,13 +59,14 @@ void main() {
     'completes an attended transfer with the source dialog in Replaces',
     () async {
       final transport = _FakeTransport();
-      final ua = SipUserAgent(transportFactory: (_) => transport);
+      final ua = SipUserAgent(transportFactory: (uri, type) => transport);
       await ua.start(
         SipAccount(
           username: '100',
           password: 'secret',
           domain: 'pbx.example.test',
           serverUri: Uri.parse('ws://pbx.example.test/sip'),
+          transportType: SipTransportType.ws,
         ),
       );
 
@@ -115,13 +117,14 @@ void main() {
 
   test('attended transfer only disconnects the selected source call', () async {
     final transport = _FakeTransport();
-    final ua = SipUserAgent(transportFactory: (_) => transport);
+    final ua = SipUserAgent(transportFactory: (uri, type) => transport);
     await ua.start(
       SipAccount(
         username: '100',
         password: 'secret',
         domain: 'pbx.example.test',
         serverUri: Uri.parse('ws://pbx.example.test/sip'),
+        transportType: SipTransportType.ws,
       ),
     );
 
@@ -154,7 +157,9 @@ void main() {
 
     final consultation = await ua.startAttendedTransfer(source.id, '789');
     expect(consultation, isNotNull);
-    final consultationInvite = transport.sent.lastWhere((m) => m.method == 'INVITE');
+    final consultationInvite = transport.sent.lastWhere(
+      (m) => m.method == 'INVITE',
+    );
     _acceptInvite(
       transport,
       consultationInvite,
@@ -205,7 +210,10 @@ void main() {
         'NOTIFY',
         'sip:100@client.example.test',
         headers: [
-          const MapEntry('Via', 'SIP/2.0/WS pbx.example.test;branch=z9hG4bK-notify'),
+          const MapEntry(
+            'Via',
+            'SIP/2.0/WS pbx.example.test;branch=z9hG4bK-notify',
+          ),
           MapEntry('From', refer.header('To')!),
           MapEntry('To', refer.header('From')!),
           MapEntry('Call-ID', refer.callId!),
@@ -233,13 +241,14 @@ void main() {
     'holds the previous call and restores it when the active call ends',
     () async {
       final transport = _FakeTransport();
-      final ua = SipUserAgent(transportFactory: (_) => transport);
+      final ua = SipUserAgent(transportFactory: (uri, type) => transport);
       await ua.start(
         SipAccount(
           username: '100',
           password: 'secret',
           domain: 'pbx.example.test',
           serverUri: Uri.parse('ws://pbx.example.test/sip'),
+          transportType: SipTransportType.ws,
         ),
       );
 
@@ -293,13 +302,14 @@ void main() {
     'activates a selected held call and holds the previous active call',
     () async {
       final transport = _FakeTransport();
-      final ua = SipUserAgent(transportFactory: (_) => transport);
+      final ua = SipUserAgent(transportFactory: (uri, type) => transport);
       await ua.start(
         SipAccount(
           username: '100',
           password: 'secret',
           domain: 'pbx.example.test',
           serverUri: Uri.parse('ws://pbx.example.test/sip'),
+          transportType: SipTransportType.ws,
         ),
       );
 
@@ -344,7 +354,7 @@ void main() {
     final transport = _FakeTransport();
     final ua = SipUserAgent(
       multipleCallsEnabled: false,
-      transportFactory: (_) => transport,
+      transportFactory: (uri, type) => transport,
     );
     await ua.start(
       SipAccount(
@@ -352,6 +362,7 @@ void main() {
         password: 'secret',
         domain: 'pbx.example.test',
         serverUri: Uri.parse('ws://pbx.example.test/sip'),
+        transportType: SipTransportType.ws,
       ),
     );
 

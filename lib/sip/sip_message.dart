@@ -145,6 +145,7 @@ class SipMessage {
   String? get fromTag => _paramOf(header('From') ?? header('f'), 'tag');
   String? get toTag => _paramOf(header('To') ?? header('t'), 'tag');
 
+  // ignore: unintended_html_in_doc_comment
   /// Returns "<seq> <method>".
   String? get cseq => header('CSeq');
 

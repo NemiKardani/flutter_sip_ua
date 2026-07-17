@@ -123,7 +123,7 @@ String buildG711Answer({
   final codec = remoteOffer.codec;
   final dtmfPt = remoteOffer.telephoneEventPt;
   final dtmfRange = remoteOffer.telephoneEventRange ?? '0-15';
-  final ptNumbers = <int>[codec.payloadType, if (dtmfPt != null) dtmfPt];
+  final ptNumbers = <int>[codec.payloadType, ?dtmfPt];
 
   final lines = <String>[
     'v=0',

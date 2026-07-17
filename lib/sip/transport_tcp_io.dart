@@ -16,10 +16,10 @@ SipTransport createTcpTransport({
   required int remotePort,
   required bool useTls,
 }) => SipTcpTransport(
-      remoteHost: remoteHost,
-      remotePort: remotePort,
-      useTls: useTls,
-    );
+  remoteHost: remoteHost,
+  remotePort: remotePort,
+  useTls: useTls,
+);
 
 class SipTcpTransport implements SipTransport {
   SipTcpTransport({
@@ -147,20 +147,24 @@ class SipTcpTransport implements SipTransport {
       }
       if (headerEnd < 0) return;
 
-      final headerStr =
-          utf8.decode(_buf.sublist(0, headerEnd), allowMalformed: true);
-      final clMatch =
-          RegExp(r'Content-Length:\s*(\d+)', caseSensitive: false)
-              .firstMatch(headerStr);
-      final contentLength =
-          clMatch != null ? int.parse(clMatch.group(1)!) : 0;
+      final headerStr = utf8.decode(
+        _buf.sublist(0, headerEnd),
+        allowMalformed: true,
+      );
+      final clMatch = RegExp(
+        r'Content-Length:\s*(\d+)',
+        caseSensitive: false,
+      ).firstMatch(headerStr);
+      final contentLength = clMatch != null ? int.parse(clMatch.group(1)!) : 0;
 
       final total = headerEnd + contentLength;
       if (_buf.length < total) return;
 
       try {
-        final msgStr =
-            utf8.decode(_buf.sublist(0, total), allowMalformed: true);
+        final msgStr = utf8.decode(
+          _buf.sublist(0, total),
+          allowMalformed: true,
+        );
         if (msgStr.trim().isNotEmpty) {
           _messageCtl.add(SipMessage.parse(msgStr));
         }

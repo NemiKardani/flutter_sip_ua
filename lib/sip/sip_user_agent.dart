@@ -79,6 +79,7 @@ class SipAccount {
     required this.password,
     required this.domain,
     required this.serverUri,
+    required this.transportType,
     this.displayName,
     this.sessionExpires = 1800,
     this.minSE = 90,
@@ -87,6 +88,7 @@ class SipAccount {
   final String username;
   final String password;
   final String domain;
+  final SipTransportType transportType;
 
   /// Where to connect. Schemes:
   ///  * `ws://host:port`  — plain WebSocket
@@ -133,14 +135,15 @@ class SipUserAgent {
     AudioSink Function()? audioSinkFactory,
     String? publicMediaAddress,
     RtpPacketTap? rtpPacketTap,
-    SipTransport Function(Uri serverUri)? transportFactory,
+    SipTransport Function(Uri serverUri, SipTransportType transportType)?
+    transportFactory,
     this.multipleCallsEnabled = true,
   }) : _rng = rng ?? Random.secure(),
        _digest = DigestClient(),
        _audioSinkFactory = audioSinkFactory,
        _publicMediaAddress = publicMediaAddress,
        _rtpPacketTap = rtpPacketTap,
-       _transportFactory = transportFactory ?? SipTransport.forUri;
+       _transportFactory = transportFactory ?? SipTransport.create;
 
   final Random _rng;
   final DigestClient _digest;
@@ -155,7 +158,8 @@ class SipUserAgent {
 
   /// Optional RTP/RTCP packet tap. See [RtpPacketTap].
   final RtpPacketTap? _rtpPacketTap;
-  final SipTransport Function(Uri serverUri) _transportFactory;
+  final SipTransport Function(Uri serverUri, SipTransportType transportType)
+  _transportFactory;
 
   /// Enables multiple simultaneous SIP dialogs while keeping only one call
   /// media-active locally. Set to `false` to preserve strict single-call
@@ -198,6 +202,16 @@ class SipUserAgent {
   Stream<SipTextMessage> get messageStream => _messageCtl.stream;
   Stream<String> get logStream => _logCtl.stream;
 
+  final List<SipUserAgentListener> _listeners = [];
+
+  void addListener(SipUserAgentListener listener) {
+    _listeners.add(listener);
+  }
+
+  void removeListener(SipUserAgentListener listener) {
+    _listeners.remove(listener);
+  }
+
   RegistrationState _regState = RegistrationState.unregistered;
   RegistrationState get registrationState => _regState;
   SipAccount? get account => _account;
@@ -228,7 +242,10 @@ class SipUserAgent {
   Future<void> start(SipAccount account) async {
     await stop();
     _account = account;
-    final transport = _transportFactory(account.serverUri);
+    final transport = _transportFactory(
+      account.serverUri,
+      account.transportType,
+    );
     _transport = transport;
     _stateSub = transport.state.listen(_onTransportState);
     _msgSub = transport.messages.listen(_onMessage);
@@ -485,7 +502,10 @@ class SipUserAgent {
       _calls[callId]?.consultationCallId;
 
   /// Associates two existing call legs for an attended transfer.
-  void associateCallsForAttendedTransfer(String sourceCallId, String consultationCallId) {
+  void associateCallsForAttendedTransfer(
+    String sourceCallId,
+    String consultationCallId,
+  ) {
     final source = _calls[sourceCallId];
     final consultation = _calls[consultationCallId];
     if (source != null && consultation != null) {
@@ -513,8 +533,7 @@ class SipUserAgent {
     final replaces =
         '${consultation.call.id};to-tag=${consultation.remoteTag};from-tag=${consultation.localTag}';
     final target = consultation.remoteContact ?? consultation.call.remoteParty;
-    final referTo =
-        '$target?Replaces=${Uri.encodeQueryComponent(replaces)}';
+    final referTo = '$target?Replaces=${Uri.encodeQueryComponent(replaces)}';
     final sent = _sendRefer(source, referTo, referSub: true);
     if (sent) source.attendedTransferCompleting = true;
     return sent;
@@ -781,7 +800,7 @@ class SipUserAgent {
     _send(msg);
     // Echo the outbound message into the message stream so that UIs which
     // render two-sided threads can show the sent line immediately.
-    _messageCtl.add(
+    _emitMessage(
       SipTextMessage(
         from: acc.aor,
         to: targetUri,
@@ -1002,7 +1021,7 @@ class SipUserAgent {
       case 'MESSAGE':
         _send(_buildResponseFor(msg, 200, 'OK'));
         final from = extractUri(msg.header('From') ?? '');
-        _messageCtl.add(
+        _emitMessage(
           SipTextMessage(
             from: from,
             body: msg.body,
@@ -1026,7 +1045,11 @@ class SipUserAgent {
                   ctx.attendedTransferCompleting = false;
                   hangup(ctx.call.id);
                 } else if (status >= 300) {
-                  logDiagnostic('TRANSFER', 'transfer failed: $status', level: 'WARN');
+                  logDiagnostic(
+                    'TRANSFER',
+                    'transfer failed: $status',
+                    level: 'WARN',
+                  );
                   ctx.attendedTransferCompleting = false;
                 }
               }
@@ -1988,18 +2011,42 @@ class SipUserAgent {
           'peer=${call.remoteParty} held=${call.held} transfer=${call.transferPending}',
     );
     _callCtl.add(call);
+    for (final l in List<SipUserAgentListener>.from(_listeners)) {
+      try {
+        l.onCallStateChanged(call);
+      } catch (_) {}
+    }
   }
 
   void _setRegState(RegistrationState s) {
     if (_regState == s) return;
     _regState = s;
     _registrationCtl.add(s);
+    for (final l in List<SipUserAgentListener>.from(_listeners)) {
+      try {
+        l.onRegistrationStateChanged(s);
+      } catch (_) {}
+    }
   }
 
   void _log(String line) {
     _logCtl.add(line);
     // ignore: avoid_print
     print(_decorateForConsole(line));
+    for (final l in List<SipUserAgentListener>.from(_listeners)) {
+      try {
+        l.onLog(line);
+      } catch (_) {}
+    }
+  }
+
+  void _emitMessage(SipTextMessage message) {
+    _messageCtl.add(message);
+    for (final l in List<SipUserAgentListener>.from(_listeners)) {
+      try {
+        l.onMessageReceived(message);
+      } catch (_) {}
+    }
   }
 
   void _logSipMessage(
@@ -2358,4 +2405,11 @@ class _Retransmitter {
     _retransmitTimer?.cancel();
     _timeoutTimer?.cancel();
   }
+}
+
+abstract class SipUserAgentListener {
+  void onRegistrationStateChanged(RegistrationState state) {}
+  void onCallStateChanged(SipCall call) {}
+  void onMessageReceived(SipTextMessage message) {}
+  void onLog(String line) {}
 }

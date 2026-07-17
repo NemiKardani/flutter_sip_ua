@@ -31,6 +31,8 @@ import 'transport_tcp_stub.dart'
 
 enum TransportState { disconnected, connecting, connected }
 
+enum SipTransportType { wss, ws, udp, tcp, tls }
+
 abstract class SipTransport {
   Stream<TransportState> get state;
   Stream<SipMessage> get messages;
@@ -53,6 +55,33 @@ abstract class SipTransport {
   /// Raw send used for RFC 5626 CRLF keep-alives over WS.
   void sendRaw(String raw);
 
+  /// Build a transport using the explicit [transportType] and [serverUri].
+  static SipTransport create(Uri serverUri, SipTransportType transportType) {
+    final host = _sipHost(serverUri);
+    switch (transportType) {
+      case SipTransportType.ws:
+      case SipTransportType.wss:
+        return SipWebSocketTransport(uri: serverUri);
+      case SipTransportType.tls:
+        final port = _sipPort(serverUri, 5061);
+        return tcp.createTcpTransport(
+          remoteHost: host,
+          remotePort: port,
+          useTls: true,
+        );
+      case SipTransportType.tcp:
+        final port = _sipPort(serverUri, 5060);
+        return tcp.createTcpTransport(
+          remoteHost: host,
+          remotePort: port,
+          useTls: false,
+        );
+      case SipTransportType.udp:
+        final port = _sipPort(serverUri, 5060);
+        return udp.createUdpTransport(remoteHost: host, remotePort: port);
+    }
+  }
+
   /// Build the right transport for [serverUri].
   ///
   ///   * ws:// / wss://                    → WebSocket (cross-platform)
@@ -71,7 +100,10 @@ abstract class SipTransport {
       final host = _sipHost(serverUri);
       final port = _sipPort(serverUri, 5061);
       return tcp.createTcpTransport(
-          remoteHost: host, remotePort: port, useTls: true);
+        remoteHost: host,
+        remotePort: port,
+        useTls: true,
+      );
     }
 
     if (scheme == 'sip' || scheme.isEmpty) {
@@ -80,12 +112,18 @@ abstract class SipTransport {
       if (transport == 'tls') {
         final port = _sipPort(serverUri, 5061);
         return tcp.createTcpTransport(
-            remoteHost: host, remotePort: port, useTls: true);
+          remoteHost: host,
+          remotePort: port,
+          useTls: true,
+        );
       }
       if (transport == 'tcp') {
         final port = _sipPort(serverUri, 5060);
         return tcp.createTcpTransport(
-            remoteHost: host, remotePort: port, useTls: false);
+          remoteHost: host,
+          remotePort: port,
+          useTls: false,
+        );
       }
       final port = _sipPort(serverUri, 5060);
       return udp.createUdpTransport(remoteHost: host, remotePort: port);
@@ -118,8 +156,7 @@ abstract class SipTransport {
     final parts = uri.path.split(';');
     for (final part in parts.skip(1)) {
       final kv = part.split('=');
-      if (kv.length == 2 &&
-          kv[0].trim().toLowerCase() == 'transport') {
+      if (kv.length == 2 && kv[0].trim().toLowerCase() == 'transport') {
         return kv[1].trim().toLowerCase();
       }
     }

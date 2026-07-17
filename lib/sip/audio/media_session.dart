@@ -112,7 +112,9 @@ class MediaSession {
     } else {
       if (_micSub == null && _socket != null && _remote != null) {
         try {
-          final stream = await SharedMicRecorder.instance.startRecording(_g711ClockRate);
+          final stream = await SharedMicRecorder.instance.startRecording(
+            _g711ClockRate,
+          );
           _micSub = stream.listen(
             _onMicChunk,
             onError: (Object e) {
@@ -120,7 +122,10 @@ class MediaSession {
             },
           );
         } catch (e) {
-          _packetTap?.call(RtpFlow.rtpOut, 'mic ERROR: failed to start shared recorder: $e');
+          _packetTap?.call(
+            RtpFlow.rtpOut,
+            'mic ERROR: failed to start shared recorder: $e',
+          );
         }
       }
     }
@@ -269,7 +274,9 @@ class MediaSession {
     _captureSampleRate = _g711ClockRate;
     if (!muted) {
       try {
-        final stream = await SharedMicRecorder.instance.startRecording(_g711ClockRate);
+        final stream = await SharedMicRecorder.instance.startRecording(
+          _g711ClockRate,
+        );
         _packetTap?.call(
           RtpFlow.rtpOut,
           'mic START: shared recording subscription on ${_g711ClockRate}Hz mono pcm16',
@@ -281,7 +288,10 @@ class MediaSession {
           },
         );
       } catch (e) {
-        _packetTap?.call(RtpFlow.rtpOut, 'mic ERROR: failed to start shared recorder: $e');
+        _packetTap?.call(
+          RtpFlow.rtpOut,
+          'mic ERROR: failed to start shared recorder: $e',
+        );
         rethrow;
       }
     }
