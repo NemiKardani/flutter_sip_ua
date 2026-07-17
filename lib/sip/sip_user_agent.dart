@@ -210,7 +210,7 @@ class SipUserAgent {
   /// Emit a formatted diagnostic line to the in-app log stream and the
   /// debug console/terminal.
   void logDiagnostic(String category, String message, {String level = 'INFO'}) {
-    _log(_formatLogLine(level: level, category: category, message: message));
+    logBatch(category, [message], level: level);
   }
 
   // ===========================================================================
@@ -750,7 +750,7 @@ class SipUserAgent {
 
   void _onMessage(SipMessage msg) {
     _fileLogger?.log('IN ', msg);
-    _logSipMessage('IN', msg);
+    final extraLines = <String>[];
     // RFC 3261 §17.1: cancel UDP retransmitter on first response.
     if (msg.isResponse) {
       final branch = _extractBranch(msg.header('Via') ?? '');
@@ -763,20 +763,22 @@ class SipUserAgent {
       if (code >= 300) {
         final warning = msg.header('Warning');
         if (warning != null) {
-          logDiagnostic('SIP/WARNING', warning, level: 'WARN');
+          extraLines.add('warning=$warning');
         }
         final body = msg.body.trim();
         if (body.isNotEmpty) {
           for (final line in body.split('\n')) {
             final t = line.trimRight();
             if (t.isNotEmpty) {
-              logDiagnostic('SIP/BODY', t, level: 'WARN');
+              extraLines.add('! $t');
             }
           }
         }
       }
+      _logSipMessage('IN', msg, extraLines: extraLines);
       _onResponse(msg);
     } else {
+      _logSipMessage('IN', msg);
       _onRequest(msg);
     }
   }
@@ -1805,21 +1807,25 @@ class SipUserAgent {
   void _setRegState(RegistrationState s) {
     if (_regState == s) return;
     _regState = s;
-    logDiagnostic('REGISTER', s.name.toUpperCase());
     _registrationCtl.add(s);
   }
 
   void _log(String line) {
     _logCtl.add(line);
     // ignore: avoid_print
-    print(line);
+    print(_decorateForConsole(line));
   }
 
-  void _logSipMessage(String direction, SipMessage msg) {
-    logDiagnostic('SIGNAL', '${direction.padRight(3)} ${_sipSummary(msg)}');
-    for (final line in _sipDetailLines(msg)) {
-      logDiagnostic('SIGNAL', line);
-    }
+  void _logSipMessage(
+    String direction,
+    SipMessage msg, {
+    List<String> extraLines = const [],
+  }) {
+    logBatch('SIGNAL', [
+      '${direction.padRight(3)} ${_sipSummary(msg)}',
+      ..._sipDetailLines(msg),
+      ...extraLines,
+    ]);
   }
 
   String _sipSummary(SipMessage msg) {
@@ -1861,6 +1867,126 @@ class SipUserAgent {
     return '[$ts] [VOIP] [$level] [$category] $message';
   }
 
+  void logBatch(String category, List<String> lines, {String level = 'INFO'}) {
+    if (lines.isEmpty) return;
+    final header = _formatLogLine(
+      level: level,
+      category: category,
+      message: lines.first,
+    );
+    final blockLines = <String>[header, ...lines.skip(1)];
+    _log(_boxLogBlock(category, level, blockLines));
+  }
+
+  String _boxLogBlock(String category, String level, List<String> lines) {
+    final cleanLines = lines
+        .map((line) => line.replaceAll('\t', '  '))
+        .toList();
+    final width = cleanLines.fold<int>(
+      0,
+      (max, line) => line.length > max ? line.length : max,
+    );
+    final top = '+-[$category]-${'-' * width}-+';
+    final middle = cleanLines
+        .map((line) => '| ${line.padRight(width)} |')
+        .join('\n');
+    final bottom = '+-[$level]-${'-' * width}-+';
+    return '$top\n$middle\n$bottom';
+  }
+
+  String _decorateForConsole(String text) {
+    final lines = text.split('\n');
+    if (lines.isEmpty) return text;
+
+    final boxColor = _paletteForBlock(lines.first);
+    final levelColor = _levelColorForBlock(lines.last);
+
+    final decorated = <String>[];
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      if (i == 0) {
+        decorated.add(_colorize(boxColor, line));
+      } else if (i == lines.length - 1) {
+        decorated.add(_colorize(levelColor, line));
+      } else {
+        decorated.add(_highlightHeader(line, boxColor));
+      }
+    }
+    return decorated.join('\n');
+  }
+
+  String _highlightHeader(String line, String boxColor) {
+    final match = RegExp(
+      r'(\[[^\]]+\] \[VOIP\] \[(INFO|WARN|ERROR)\] \[([^\]]+)\])',
+    ).firstMatch(line);
+    if (match == null) return line;
+    final whole = match.group(1)!;
+    final level = match.group(2)!;
+    final category = match.group(3)!;
+    final coloredWhole = _colorize(_levelColor(level), whole);
+    final coloredCategory = _colorize(
+      _paletteForCategory(category),
+      '[$category]',
+    );
+    return line.replaceFirst(
+      whole,
+      coloredWhole.replaceFirst('[$category]', coloredCategory),
+    );
+  }
+
+  String _paletteForBlock(String line) {
+    final match = RegExp(r'^\+-\[([^\]]+)\]-').firstMatch(line);
+    return _paletteForCategory(match?.group(1) ?? '');
+  }
+
+  String _levelColorForBlock(String line) {
+    final match = RegExp(r'^\+-\[([^\]]+)\]-').firstMatch(line);
+    return _levelColor(match?.group(1) ?? '');
+  }
+
+  String _paletteForCategory(String category) {
+    switch (category) {
+      case 'SIGNAL':
+        return _ansiCyan;
+      case 'CALL':
+        return _ansiGreen;
+      case 'REGISTER':
+        return _ansiBlue;
+      case 'TRANSPORT':
+        return _ansiMagenta;
+      case 'RTP':
+        return _ansiYellow;
+      case 'MEDIA':
+      case 'VIDEO':
+        return _ansiBrightMagenta;
+      case 'SESSION':
+        return _ansiBrightBlue;
+      case 'TRANSFER':
+        return _ansiBrightCyan;
+      case 'SDP':
+        return _ansiBrightYellow;
+      case 'LOGGER':
+        return _ansiWhite;
+      default:
+        return _ansiWhite;
+    }
+  }
+
+  String _levelColor(String level) {
+    switch (level) {
+      case 'ERROR':
+        return _ansiRed;
+      case 'WARN':
+        return _ansiYellow;
+      case 'INFO':
+        return _ansiGreen;
+      default:
+        return _ansiWhite;
+    }
+  }
+
+  String _colorize(String color, String text) => '$color$text$_ansiReset';
+
   String _shortId(String? value) {
     if (value == null || value.isEmpty) return '-';
     return value.length <= 8 ? value : value.substring(0, 8);
@@ -1875,6 +2001,19 @@ class SipUserAgent {
     return normalized.length <= 10 ? normalized : normalized.substring(0, 10);
   }
 }
+
+const _ansiReset = '\x1B[0m';
+const _ansiRed = '\x1B[31m';
+const _ansiGreen = '\x1B[32m';
+const _ansiYellow = '\x1B[33m';
+const _ansiBlue = '\x1B[34m';
+const _ansiMagenta = '\x1B[35m';
+const _ansiCyan = '\x1B[36m';
+const _ansiWhite = '\x1B[37m';
+const _ansiBrightBlue = '\x1B[94m';
+const _ansiBrightMagenta = '\x1B[95m';
+const _ansiBrightCyan = '\x1B[96m';
+const _ansiBrightYellow = '\x1B[93m';
 
 class _CallContext {
   _CallContext({
