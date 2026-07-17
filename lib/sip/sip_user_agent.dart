@@ -1858,40 +1858,46 @@ class SipUserAgent {
     return lines;
   }
 
-  String _formatLogLine({
+  String _formatLogTitle({
     required String level,
     required String category,
     required String message,
   }) {
     final ts = DateTime.now().toIso8601String();
-    return '[$ts] [VOIP] [$level] [$category] $message';
+    return '$ts | VOIP | $level | $category | $message';
   }
 
   void logBatch(String category, List<String> lines, {String level = 'INFO'}) {
     if (lines.isEmpty) return;
-    final header = _formatLogLine(
+    final title = _formatLogTitle(
       level: level,
       category: category,
       message: lines.first,
     );
-    final blockLines = <String>[header, ...lines.skip(1)];
-    _log(_boxLogBlock(category, level, blockLines));
+    _log(_boxLogBlock(category, level, title, lines.skip(1).toList()));
   }
 
-  String _boxLogBlock(String category, String level, List<String> lines) {
-    final cleanLines = lines
-        .map((line) => line.replaceAll('\t', '  '))
-        .toList();
+  String _boxLogBlock(
+    String category,
+    String level,
+    String title,
+    List<String> lines,
+  ) {
+    final cleanLines = <String>[
+      title,
+      ...lines,
+    ].map((line) => line.replaceAll('\t', '  ')).toList();
     final width = cleanLines.fold<int>(
       0,
       (max, line) => line.length > max ? line.length : max,
     );
-    final top = '+-[$category]-${'-' * width}-+';
+    final top = '+-${cleanLines.first.padRight(width)}-+';
     final middle = cleanLines
+        .skip(1)
         .map((line) => '| ${line.padRight(width)} |')
         .join('\n');
     final bottom = '+-[$level]-${'-' * width}-+';
-    return '$top\n$middle\n$bottom';
+    return middle.isEmpty ? '$top\n$bottom' : '$top\n$middle\n$bottom';
   }
 
   String _decorateForConsole(String text) {
@@ -1909,34 +1915,31 @@ class SipUserAgent {
       } else if (i == lines.length - 1) {
         decorated.add(_colorize(levelColor, line));
       } else {
-        decorated.add(_highlightHeader(line, boxColor));
+        decorated.add(line);
       }
     }
     return decorated.join('\n');
   }
 
-  String _highlightHeader(String line, String boxColor) {
-    final match = RegExp(
-      r'(\[[^\]]+\] \[VOIP\] \[(INFO|WARN|ERROR)\] \[([^\]]+)\])',
-    ).firstMatch(line);
-    if (match == null) return line;
-    final whole = match.group(1)!;
-    final level = match.group(2)!;
-    final category = match.group(3)!;
-    final coloredWhole = _colorize(_levelColor(level), whole);
-    final coloredCategory = _colorize(
-      _paletteForCategory(category),
-      '[$category]',
-    );
-    return line.replaceFirst(
-      whole,
-      coloredWhole.replaceFirst('[$category]', coloredCategory),
-    );
-  }
-
   String _paletteForBlock(String line) {
-    final match = RegExp(r'^\+-\[([^\]]+)\]-').firstMatch(line);
-    return _paletteForCategory(match?.group(1) ?? '');
+    for (final category in <String>[
+      'SIGNAL',
+      'CALL',
+      'REGISTER',
+      'TRANSPORT',
+      'RTP',
+      'MEDIA',
+      'VIDEO',
+      'SESSION',
+      'TRANSFER',
+      'SDP',
+      'LOGGER',
+    ]) {
+      if (line.contains('| $category |')) {
+        return _paletteForCategory(category);
+      }
+    }
+    return _ansiWhite;
   }
 
   String _levelColorForBlock(String line) {
