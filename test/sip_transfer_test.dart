@@ -299,11 +299,14 @@ void main() {
       expect(ua.callById(first!.id)?.held, isTrue);
       expect(ua.callById(second!.id)?.held, isFalse);
 
+      ua.debugSetMediaMuted(first.id, true);
       expect(ua.activateCall(first.id), isTrue);
       await Future<void>.delayed(Duration.zero);
 
       expect(ua.callById(first.id)?.held, isFalse);
+      expect(ua.isMuted(first.id), isFalse);
       expect(ua.callById(second.id)?.held, isTrue);
+      expect(ua.isMuted(second.id), isTrue);
 
       await ua.stop();
       await transport.dispose();

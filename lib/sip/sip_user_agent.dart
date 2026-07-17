@@ -410,6 +410,10 @@ class SipUserAgent {
   /// if the call has no active media.
   bool? isMuted(String callId) => _calls[callId]?.media?.muted;
 
+  void debugSetMediaMuted(String callId, bool muted) {
+    _calls[callId]?.media?.muted = muted;
+  }
+
   /// Place [callId] on hold (or resume it). Sends a re-INVITE with
   /// `a=sendonly` (hold) or `a=sendrecv` (resume). The local mic is also
   /// muted while held so we don't keep streaming audio after the peer
@@ -1867,13 +1871,17 @@ class SipUserAgent {
     bool emit = true,
   }) {
     if (ctx.call.state != CallState.active) return;
+    _syncHoldMedia(ctx, hold);
     if (ctx.held == hold) return;
     ctx.held = hold;
     ctx.call.held = hold;
-    final media = ctx.media;
-    if (media != null) media.muted = hold;
     if (sendReinvite) _sendReinvite(ctx);
     if (emit) _emitCall(ctx.call);
+  }
+
+  void _syncHoldMedia(_CallContext ctx, bool hold) {
+    final media = ctx.media;
+    if (media != null) media.muted = hold;
   }
 
   static String? _extractBranch(String viaHeader) {

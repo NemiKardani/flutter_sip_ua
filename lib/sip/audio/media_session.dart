@@ -19,9 +19,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:record/record.dart';
-
 import 'audio_sink.dart';
+import 'shared_mic_recorder.dart';
 import 'g711.dart';
 import 'jitter_buffer.dart';
 import 'rtcp.dart';
@@ -72,7 +71,6 @@ class MediaSession {
   InternetAddress? _remoteAddr;
   InternetAddress? _remoteRtcpAddr;
   RtpEndpoint? _remote;
-  AudioRecorder? _recorder;
   StreamSubscription<Uint8List>? _micSub;
   StreamSubscription<RawSocketEvent>? _socketSub;
   RtpState? _state;
@@ -92,9 +90,41 @@ class MediaSession {
   /// Stats used to populate SR/RR.
   final RtpStats stats = RtpStats();
 
-  /// When true, mic input is dropped before RTP encoding (audio still
-  /// flows in the receive direction).
-  bool muted = false;
+  bool _muted = false;
+
+  /// When true, mic input is stopped/released so other calls can use the mic
+  /// (audio still flows in the receive direction).
+  bool get muted => _muted;
+
+  set muted(bool value) {
+    if (_muted == value) return;
+    _muted = value;
+    _syncSharedMicSubscription();
+  }
+
+  Future<void> _syncSharedMicSubscription() async {
+    if (_muted) {
+      if (_micSub != null) {
+        await _micSub!.cancel();
+        _micSub = null;
+        await SharedMicRecorder.instance.stopRecording();
+      }
+    } else {
+      if (_micSub == null && _socket != null && _remote != null) {
+        try {
+          final stream = await SharedMicRecorder.instance.startRecording(_g711ClockRate);
+          _micSub = stream.listen(
+            _onMicChunk,
+            onError: (Object e) {
+              _packetTap?.call(RtpFlow.rtpOut, 'mic ERROR: $e');
+            },
+          );
+        } catch (e) {
+          _packetTap?.call(RtpFlow.rtpOut, 'mic ERROR: failed to start shared recorder: $e');
+        }
+      }
+    }
+  }
 
   /// Where decoded inbound PCM goes for playback. The default sink is a
   /// no-op so the signalling-only behaviour is preserved unless the host
@@ -236,45 +266,25 @@ class MediaSession {
       (_) => _jitter?.tick(),
     );
 
-    // Permission gate. `record` handles platform specifics for us.
-    final recorder = AudioRecorder();
-    _recorder = recorder;
-    if (!await recorder.hasPermission()) {
-      _packetTap?.call(
-        RtpFlow.rtpOut,
-        'mic ERROR: microphone permission denied',
-      );
-      throw StateError('Microphone permission denied');
-    }
-
-    // Try to capture at 8 kHz directly; if the platform forces another
-    // rate we'll downsample on the fly.
-    Stream<Uint8List> stream;
-    try {
-      stream = await recorder.startStream(
-        const RecordConfig(
-          encoder: AudioEncoder.pcm16bits,
-          sampleRate: _g711ClockRate,
-          numChannels: 1,
-        ),
-      );
-    } catch (e) {
-      _packetTap?.call(RtpFlow.rtpOut, 'mic ERROR: startStream failed: $e');
-      rethrow;
-    }
-    // record honours the requested rate when the platform supports it; if
-    // it falls back, our manual downsampler takes over.
     _captureSampleRate = _g711ClockRate;
-    _packetTap?.call(
-      RtpFlow.rtpOut,
-      'mic START: requested ${_g711ClockRate}Hz mono pcm16',
-    );
-    _micSub = stream.listen(
-      _onMicChunk,
-      onError: (Object e) {
-        _packetTap?.call(RtpFlow.rtpOut, 'mic ERROR: $e');
-      },
-    );
+    if (!muted) {
+      try {
+        final stream = await SharedMicRecorder.instance.startRecording(_g711ClockRate);
+        _packetTap?.call(
+          RtpFlow.rtpOut,
+          'mic START: shared recording subscription on ${_g711ClockRate}Hz mono pcm16',
+        );
+        _micSub = stream.listen(
+          _onMicChunk,
+          onError: (Object e) {
+            _packetTap?.call(RtpFlow.rtpOut, 'mic ERROR: $e');
+          },
+        );
+      } catch (e) {
+        _packetTap?.call(RtpFlow.rtpOut, 'mic ERROR: failed to start shared recorder: $e');
+        rethrow;
+      }
+    }
 
     // Schedule RTCP. Per RFC 3550 §6.3.2 the initial transmission is
     // randomized to half the deterministic interval so multiple endpoints
@@ -301,17 +311,10 @@ class MediaSession {
     if (jitter != null) {
       await jitter.close();
     }
-    await _micSub?.cancel();
-    _micSub = null;
-    final recorder = _recorder;
-    _recorder = null;
-    if (recorder != null) {
-      try {
-        await recorder.stop();
-      } catch (_) {}
-      try {
-        await recorder.dispose();
-      } catch (_) {}
+    if (_micSub != null) {
+      await _micSub!.cancel();
+      _micSub = null;
+      await SharedMicRecorder.instance.stopRecording();
     }
     try {
       await _sink.close();
