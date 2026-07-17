@@ -59,9 +59,14 @@ final sipFileLoggerProvider = Provider<SipFileLogger>((ref) {
 
 final sipUserAgentProvider = Provider<SipUserAgent>((ref) {
   final logger = ref.watch(sipFileLoggerProvider);
-  final ua = SipUserAgent(
+  late final SipUserAgent ua;
+  ua = SipUserAgent(
     audioSinkFactory: () => PcmAudioSink(),
-    rtpPacketTap: (flow, summary) => logger.note('rtp ${flow.name} $summary'),
+    rtpPacketTap: (flow, summary) {
+      final message = '${flow.name.toUpperCase()} $summary';
+      ua.logDiagnostic('RTP', message);
+      logger.note('rtp ${flow.name} $summary');
+    },
   );
   ua.attachFileLogger(logger);
   ref.onDispose(() {

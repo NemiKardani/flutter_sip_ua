@@ -204,7 +204,13 @@ class SipUserAgent {
   /// SIP message is written to [logger]'s file verbatim.
   void attachFileLogger(SipFileLogger logger) {
     _fileLogger = logger;
-    _log('file logger: writing wire dump to ${logger.path}');
+    logDiagnostic('LOGGER', 'wire dump -> ${logger.path}');
+  }
+
+  /// Emit a formatted diagnostic line to the in-app log stream and the
+  /// debug console/terminal.
+  void logDiagnostic(String category, String message, {String level = 'INFO'}) {
+    _log(_formatLogLine(level: level, category: category, message: message));
   }
 
   // ===========================================================================
@@ -227,7 +233,9 @@ class SipUserAgent {
     _registerTimer = null;
     _keepAliveTimer?.cancel();
     _keepAliveTimer = null;
-    for (final r in _retransmits.values) r.cancel();
+    for (final r in _retransmits.values) {
+      r.cancel();
+    }
     _retransmits.clear();
     for (final ctx in _calls.values.toList()) {
       ctx.cancelTimers();
@@ -262,9 +270,11 @@ class SipUserAgent {
     final tx = _transport;
     if (acc == null || tx == null || !tx.isConnected) return null;
     if (isWeb) {
-      _log(
-        'makeCall: rejected — RTP media (UDP) is not supported on web. '
-        'Outgoing audio/video calls require a native build.',
+      logDiagnostic(
+        'CALL',
+        'makeCall rejected: RTP media (UDP) is not supported on web; '
+            'outgoing audio/video calls require a native build',
+        level: 'WARN',
       );
       return null;
     }
@@ -508,7 +518,7 @@ class SipUserAgent {
       ctx.transferPending = false;
       ctx.call.transferPending = false;
       _emitCall(ctx.call);
-      _log('transfer: failed to send REFER: $e');
+      logDiagnostic('TRANSFER', 'failed to send REFER: $e', level: 'ERROR');
       return false;
     }
   }
@@ -565,9 +575,11 @@ class SipUserAgent {
     final acc = _account;
     if (acc == null) return;
     if (isWeb) {
-      _log(
-        'answer: rejected — RTP media (UDP) is not supported on web. '
-        'Answering audio/video calls requires a native build.',
+      logDiagnostic(
+        'CALL',
+        'answer rejected: RTP media (UDP) is not supported on web; '
+            'answering audio/video calls require a native build',
+        level: 'WARN',
       );
       return;
     }
@@ -653,14 +665,14 @@ class SipUserAgent {
       try {
         await media.start(remoteAudio.toEndpoint());
       } catch (e) {
-        _log('media: failed to start: $e');
+        logDiagnostic('MEDIA', 'failed to start: $e', level: 'ERROR');
       }
     }
     if (video != null && remoteVideo != null) {
       try {
         await video.start(VideoEndpoint.fromSdp(remoteVideo));
       } catch (e) {
-        _log('video: failed to start: $e');
+        logDiagnostic('VIDEO', 'failed to start: $e', level: 'ERROR');
       }
     }
   }
@@ -679,7 +691,7 @@ class SipUserAgent {
     try {
       await media.sendDtmf(digit, duration: duration);
     } catch (e) {
-      _log('dtmf: $e');
+      logDiagnostic('DTMF', '$e', level: 'ERROR');
     }
   }
 
@@ -719,7 +731,7 @@ class SipUserAgent {
   // ===========================================================================
 
   void _onTransportState(TransportState s) {
-    _log('transport: $s');
+    logDiagnostic('TRANSPORT', s.name.toUpperCase());
     _fileLogger?.note('transport: $s');
     switch (s) {
       case TransportState.connecting:
@@ -738,9 +750,7 @@ class SipUserAgent {
 
   void _onMessage(SipMessage msg) {
     _fileLogger?.log('IN ', msg);
-    _log(
-      '<-- ${msg.isResponse ? "${msg.statusCode} ${msg.reasonPhrase}" : "${msg.method} ${msg.requestUri}"}',
-    );
+    _logSipMessage('IN', msg);
     // RFC 3261 §17.1: cancel UDP retransmitter on first response.
     if (msg.isResponse) {
       final branch = _extractBranch(msg.header('Via') ?? '');
@@ -752,12 +762,16 @@ class SipUserAgent {
       final code = msg.statusCode ?? 0;
       if (code >= 300) {
         final warning = msg.header('Warning');
-        if (warning != null) _log('    Warning: $warning');
+        if (warning != null) {
+          logDiagnostic('SIP/WARNING', warning, level: 'WARN');
+        }
         final body = msg.body.trim();
         if (body.isNotEmpty) {
           for (final line in body.split('\n')) {
             final t = line.trimRight();
-            if (t.isNotEmpty) _log('    | $t');
+            if (t.isNotEmpty) {
+              logDiagnostic('SIP/BODY', t, level: 'WARN');
+            }
           }
         }
       }
@@ -813,13 +827,13 @@ class SipUserAgent {
           final media = ctx.media;
           if (media != null && remoteAudio != null) {
             media.start(remoteAudio.toEndpoint()).catchError((e) {
-              _log('media: failed to start: $e');
+              logDiagnostic('MEDIA', 'failed to start: $e', level: 'ERROR');
             });
           }
           final video = ctx.video;
           if (video != null && remoteVideo != null) {
             video.start(VideoEndpoint.fromSdp(remoteVideo)).catchError((e) {
-              _log('video: failed to start: $e');
+              logDiagnostic('VIDEO', 'failed to start: $e', level: 'ERROR');
             });
           }
         } else {
@@ -840,15 +854,17 @@ class SipUserAgent {
       ctx.call.transferPending = false;
       _emitCall(ctx.call);
       if (code >= 200 && code < 300) {
-        _log('transfer: REFER accepted for ${ctx.call.id}');
+        logDiagnostic('TRANSFER', 'REFER accepted for ${ctx.call.id}');
       } else {
         final sourceId = ctx.transferSourceCallId;
         if (sourceId != null) {
           final source = _calls[sourceId];
           if (source != null) source.attendedTransferCompleting = false;
         }
-        _log(
-          'transfer: REFER rejected (${msg.statusCode} ${msg.reasonPhrase})',
+        logDiagnostic(
+          'TRANSFER',
+          'REFER rejected (${msg.statusCode} ${msg.reasonPhrase})',
+          level: 'WARN',
         );
       }
     } else if (cseqMethod == 'BYE' || cseqMethod == 'CANCEL') {
@@ -1082,13 +1098,15 @@ class SipUserAgent {
       // Refresh at half-interval.
       final delay = Duration(seconds: (se / 2).floor().clamp(1, 1 << 30));
       ctx.refreshTimer = Timer(delay, () => _sendRefreshInvite(ctx));
-      _log('session-timer: will refresh ${ctx.call.id} in ${delay.inSeconds}s');
+      logDiagnostic('SESSION', 'refresh ${ctx.call.id} in ${delay.inSeconds}s');
     } else {
       // Peer refreshes; arm a hard timeout after full interval (+ small grace).
       final delay = Duration(seconds: se + 32);
       ctx.expiryTimer = Timer(delay, () {
-        _log(
-          'session-timer: peer missed refresh, sending BYE on ${ctx.call.id}',
+        logDiagnostic(
+          'SESSION',
+          'peer missed refresh, sending BYE on ${ctx.call.id}',
+          level: 'WARN',
         );
         hangup(ctx.call.id);
       });
@@ -1344,7 +1362,7 @@ class SipUserAgent {
     // all routes go into Route headers.
     // Strict routing (no ;lr): requestUri = first route, remaining routes +
     // remote target appended as Route headers.
-    final effectiveRequestUri;
+    late final String effectiveRequestUri;
     final routeHeaders = <String>[];
     if (routeSet.isNotEmpty) {
       final first = routeSet.first;
@@ -1668,9 +1686,11 @@ class SipUserAgent {
     if (tx == null) return '127.0.0.1';
     final h = tx.localHost;
     if (h.isEmpty || h == '0.0.0.0' || h == '::') {
-      _log(
-        'sdp: transport local host is unspecified ($h); '
-        'falling back to 127.0.0.1 — set publicMediaAddress for real deployments',
+      logDiagnostic(
+        'SDP',
+        'transport local host is unspecified ($h); '
+            'falling back to 127.0.0.1; set publicMediaAddress for real deployments',
+        level: 'WARN',
       );
       return '127.0.0.1';
     }
@@ -1700,9 +1720,7 @@ class SipUserAgent {
 
   void _send(SipMessage msg) {
     _fileLogger?.log('OUT', msg);
-    _log(
-      '--> ${msg.isResponse ? "${msg.statusCode} ${msg.reasonPhrase}" : "${msg.method} ${msg.requestUri}"}',
-    );
+    _logSipMessage('OUT', msg);
     final tx = _transport;
     if (tx == null) return;
     tx.send(msg);
@@ -1774,15 +1792,88 @@ class SipUserAgent {
     }
   }
 
-  void _emitCall(SipCall call) => _callCtl.add(call);
+  void _emitCall(SipCall call) {
+    logDiagnostic(
+      'CALL',
+      'id=${_shortId(call.id)} state=${call.state.name} '
+          'dir=${call.outgoing ? "out" : "in"} '
+          'peer=${call.remoteParty} held=${call.held} transfer=${call.transferPending}',
+    );
+    _callCtl.add(call);
+  }
 
   void _setRegState(RegistrationState s) {
     if (_regState == s) return;
     _regState = s;
+    logDiagnostic('REGISTER', s.name.toUpperCase());
     _registrationCtl.add(s);
   }
 
-  void _log(String line) => _logCtl.add(line);
+  void _log(String line) {
+    _logCtl.add(line);
+    // ignore: avoid_print
+    print(line);
+  }
+
+  void _logSipMessage(String direction, SipMessage msg) {
+    logDiagnostic('SIGNAL', '${direction.padRight(3)} ${_sipSummary(msg)}');
+    for (final line in _sipDetailLines(msg)) {
+      logDiagnostic('SIGNAL', line);
+    }
+  }
+
+  String _sipSummary(SipMessage msg) {
+    final startLine = msg.isResponse
+        ? '${msg.statusCode} ${msg.reasonPhrase}'
+        : '${msg.method} ${msg.requestUri}';
+    final callId = _shortId(msg.callId);
+    final cseq = msg.cseq ?? '-';
+    final branch = _shortBranch(_extractBranch(msg.header('Via') ?? ''));
+    return '$startLine | call=$callId | cseq=$cseq | branch=$branch';
+  }
+
+  List<String> _sipDetailLines(SipMessage msg) {
+    final lines = <String>[
+      'from=${extractUri(msg.header("From") ?? "")} to=${extractUri(msg.header("To") ?? "")}',
+      'via=${msg.header("Via") ?? "-"}',
+    ];
+    final contact = msg.header('Contact');
+    if (contact != null && contact.isNotEmpty) {
+      lines.add('contact=${extractUri(contact)}');
+    }
+    final body = msg.body.trim();
+    if (body.isNotEmpty) {
+      lines.add('body=${body.length}b');
+      for (final rawLine in body.split('\n')) {
+        final trimmed = rawLine.trimRight();
+        if (trimmed.isNotEmpty) lines.add('| $trimmed');
+      }
+    }
+    return lines;
+  }
+
+  String _formatLogLine({
+    required String level,
+    required String category,
+    required String message,
+  }) {
+    final ts = DateTime.now().toIso8601String();
+    return '[$ts] [VOIP] [$level] [$category] $message';
+  }
+
+  String _shortId(String? value) {
+    if (value == null || value.isEmpty) return '-';
+    return value.length <= 8 ? value : value.substring(0, 8);
+  }
+
+  String _shortBranch(String? value) {
+    if (value == null || value.isEmpty) return '-';
+    const prefix = 'z9hG4bK';
+    final normalized = value.startsWith(prefix)
+        ? value.substring(prefix.length)
+        : value;
+    return normalized.length <= 10 ? normalized : normalized.substring(0, 10);
+  }
 }
 
 class _CallContext {
