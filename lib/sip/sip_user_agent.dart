@@ -479,9 +479,24 @@ class SipUserAgent {
   String? attendedTransferSourceFor(String callId) =>
       _calls[callId]?.transferSourceCallId;
 
-  /// Completes an attended transfer by sending REFER on the consultation
-  /// dialog. RFC 3891's Replaces value tells the consultation party which
-  /// source dialog to replace when it INVITEs the original remote party.
+  /// The consultation call associated with an attended-transfer source
+  /// call, or `null` when [callId] is an ordinary call.
+  String? attendedTransferConsultationFor(String callId) =>
+      _calls[callId]?.consultationCallId;
+
+  /// Associates two existing call legs for an attended transfer.
+  void associateCallsForAttendedTransfer(String sourceCallId, String consultationCallId) {
+    final source = _calls[sourceCallId];
+    final consultation = _calls[consultationCallId];
+    if (source != null && consultation != null) {
+      source.consultationCallId = consultationCallId;
+      consultation.transferSourceCallId = sourceCallId;
+    }
+  }
+
+  /// Completes an attended transfer by sending REFER on the source
+  /// dialog. RFC 3891's Replaces value tells the transferee party which
+  /// consultation dialog to replace when it INVITEs the transfer target.
   bool completeAttendedTransfer(String consultationCallId) {
     final consultation = _calls[consultationCallId];
     final sourceId = consultation?.transferSourceCallId;
@@ -491,15 +506,16 @@ class SipUserAgent {
         consultation.call.state != CallState.active ||
         source.call.state != CallState.active ||
         !source.held ||
-        source.remoteTag == null) {
+        consultation.remoteTag == null) {
       return false;
     }
 
     final replaces =
-        '${source.call.id};to-tag=${source.remoteTag};from-tag=${source.localTag}';
+        '${consultation.call.id};to-tag=${consultation.remoteTag};from-tag=${consultation.localTag}';
+    final target = consultation.remoteContact ?? consultation.call.remoteParty;
     final referTo =
-        '${source.call.remoteParty}?Replaces=${Uri.encodeQueryComponent(replaces)}';
-    final sent = _sendRefer(consultation, referTo);
+        '$target?Replaces=${Uri.encodeQueryComponent(replaces)}';
+    final sent = _sendRefer(source, referTo, referSub: true);
     if (sent) source.attendedTransferCompleting = true;
     return sent;
   }
@@ -527,7 +543,7 @@ class SipUserAgent {
     return _sendRefer(ctx, targetUri);
   }
 
-  bool _sendRefer(_CallContext ctx, String referTo) {
+  bool _sendRefer(_CallContext ctx, String referTo, {bool referSub = false}) {
     final acc = _account;
     final tx = _transport;
     if (acc == null ||
@@ -553,9 +569,7 @@ class SipUserAgent {
       extra: {
         'Refer-To': '<$referTo>',
         'Referred-By': '<${acc.aor}>',
-        // We show the REFER response directly, so avoid an unnecessary
-        // refer-event subscription for the blind-transfer flow.
-        'Refer-Sub': 'false',
+        if (!referSub) 'Refer-Sub': 'false',
       },
     );
     ctx.transferPending = true;
@@ -918,6 +932,7 @@ class SipUserAgent {
           if (source != null) hangup(sourceId);
         }
       } else {
+        ctx.attendedTransferCompleting = false;
         final sourceId = ctx.transferSourceCallId;
         if (sourceId != null) {
           final source = _calls[sourceId];
@@ -996,6 +1011,29 @@ class SipUserAgent {
         );
         return;
       case 'NOTIFY':
+        final ctx = _calls[msg.callId];
+        _send(_buildResponseFor(msg, 200, 'OK'));
+        if (ctx != null && ctx.attendedTransferCompleting) {
+          final event = msg.header('Event');
+          if (event != null && event.startsWith('refer')) {
+            final body = msg.body;
+            final match = RegExp(r'(?:SIP/2\.0\s+)?(\d+)').firstMatch(body);
+            if (match != null) {
+              final status = int.tryParse(match.group(1)!);
+              if (status != null) {
+                if (status >= 200 && status < 300) {
+                  logDiagnostic('TRANSFER', 'transfer successful: $status');
+                  ctx.attendedTransferCompleting = false;
+                  hangup(ctx.call.id);
+                } else if (status >= 300) {
+                  logDiagnostic('TRANSFER', 'transfer failed: $status', level: 'WARN');
+                  ctx.attendedTransferCompleting = false;
+                }
+              }
+            }
+          }
+        }
+        return;
       case 'INFO':
         _send(_buildResponseFor(msg, 200, 'OK'));
         return;

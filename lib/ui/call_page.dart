@@ -182,7 +182,9 @@ class _CallPageState extends ConsumerState<CallPage>
   }
 
   void _completeAttendedTransfer() {
-    final sent = _ua.completeAttendedTransfer(widget.callId);
+    final consultationId = _ua.attendedTransferConsultationFor(widget.callId);
+    final targetId = consultationId ?? widget.callId;
+    final sent = _ua.completeAttendedTransfer(targetId);
     _toast(
       sent
           ? 'Completing attended transfer'
@@ -300,6 +302,91 @@ class _CallPageState extends ConsumerState<CallPage>
     );
   }
 
+  Future<void> _performAttendedTransferBetween(SipCall source, SipCall target) async {
+    if (!source.held) {
+      _ua.setHold(source.id, true);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+    _ua.associateCallsForAttendedTransfer(source.id, target.id);
+    final sent = _ua.completeAttendedTransfer(target.id);
+    _toast(
+      sent
+          ? 'Completing attended transfer...'
+          : 'Cannot complete this transfer right now',
+    );
+  }
+
+  void _showAttendedTransferSelectSheet(SipCall source, List<SipCall> otherCalls) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        final scheme = theme.colorScheme;
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(24, 4, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Attended Transfer',
+                style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Bridge ${source.remoteParty} with another active call:',
+                style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: otherCalls.length,
+                  separatorBuilder: (context, index) => Divider(
+                    height: 1,
+                    color: scheme.outlineVariant.withValues(alpha: 0.3),
+                  ),
+                  itemBuilder: (context, index) {
+                    final targetCall = otherCalls[index];
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: scheme.primaryContainer.withValues(alpha: 0.5),
+                        child: Icon(Icons.call, color: scheme.primary),
+                      ),
+                      title: Text(
+                        targetCall.remoteParty,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Text(
+                        targetCall.held ? 'On Hold' : 'Active',
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      ),
+                      trailing: const Icon(Icons.call_merge, size: 18),
+                      onTap: () {
+                        Navigator.of(ctx).pop();
+                        _performAttendedTransferBetween(source, targetCall);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // ── Build ────────────────────────────────────────────────────────────
 
   @override
@@ -339,6 +426,24 @@ class _CallPageState extends ConsumerState<CallPage>
               call.state == CallState.outgoingRinging,
         )
         .toList();
+
+    final sourceId = _ua.attendedTransferSourceFor(c.id);
+    final consultationId = _ua.attendedTransferConsultationFor(c.id);
+    SipCall? sourceCall;
+    SipCall? consultationCall;
+    if (sourceId != null) {
+      sourceCall = liveCalls.firstWhere(
+        (call) => call.id == sourceId,
+        orElse: () => SipCall(id: sourceId, remoteParty: 'Original Call', outgoing: false),
+      );
+    }
+    if (consultationId != null) {
+      consultationCall = liveCalls.firstWhere(
+        (call) => call.id == consultationId,
+        orElse: () => SipCall(id: consultationId, remoteParty: 'Consultation Call', outgoing: true),
+      );
+    }
+
     return LayoutBuilder(
       builder: (context, constraints) {
         return SingleChildScrollView(
@@ -373,6 +478,35 @@ class _CallPageState extends ConsumerState<CallPage>
                         calls: liveCalls,
                         selectedCallId: c.id,
                         onSwitch: _switchToCall,
+                        onAttendedTransfer: (sourceCall) {
+                          final otherCalls = liveCalls
+                              .where((call) =>
+                                  call.id != sourceCall.id &&
+                                  call.state == CallState.active)
+                              .toList();
+                          if (otherCalls.isEmpty) {
+                            _toast('No other active calls to bridge.');
+                          } else {
+                            _showAttendedTransferSelectSheet(sourceCall, otherCalls);
+                          }
+                        },
+                      ),
+                    ],
+                    if (sourceCall != null && state == CallState.active) ...[
+                      const SizedBox(height: 14),
+                      _TransferStatusCard(
+                        title: 'Consultation Call Active',
+                        subtitle: 'Consulting with ${c.remoteParty} to transfer ${sourceCall.remoteParty} here.',
+                        buttonLabel: 'Complete Attended Transfer',
+                        onPressed: c.transferPending ? null : _completeAttendedTransfer,
+                      ),
+                    ] else if (consultationCall != null && state == CallState.active) ...[
+                      const SizedBox(height: 14),
+                      _TransferStatusCard(
+                        title: 'Attended Transfer Active',
+                        subtitle: 'Currently consulting with ${consultationCall.remoteParty}. Tap below to complete.',
+                        buttonLabel: 'Complete Attended Transfer',
+                        onPressed: c.transferPending ? null : _completeAttendedTransfer,
                       ),
                     ],
                     if (_dtmfHistory.isNotEmpty && state == CallState.active)
@@ -468,11 +602,13 @@ class _MultiCallTray extends StatelessWidget {
     required this.calls,
     required this.selectedCallId,
     required this.onSwitch,
+    required this.onAttendedTransfer,
   });
 
   final List<SipCall> calls;
   final String selectedCallId;
   final ValueChanged<String> onSwitch;
+  final ValueChanged<SipCall> onAttendedTransfer;
 
   @override
   Widget build(BuildContext context) {
@@ -508,6 +644,7 @@ class _MultiCallTray extends StatelessWidget {
                     call: call,
                     selected: call.id == selectedCallId,
                     onTap: () => onSwitch(call.id),
+                    onAttendedTransfer: () => onAttendedTransfer(call),
                   ),
                 ),
             ],
@@ -523,11 +660,13 @@ class _MultiCallCard extends ConsumerWidget {
     required this.call,
     required this.selected,
     required this.onTap,
+    required this.onAttendedTransfer,
   });
 
   final SipCall call;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onAttendedTransfer;
 
   String get _name {
     var value = call.remoteParty;
@@ -651,6 +790,23 @@ class _MultiCallCard extends ConsumerWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  IconButton.filled(
+                    style: IconButton.styleFrom(
+                      backgroundColor: call.state == CallState.active
+                          ? scheme.secondary
+                          : scheme.outlineVariant.withValues(alpha: 0.5),
+                      padding: const EdgeInsets.all(6),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    icon: Icon(
+                      Icons.swap_calls,
+                      size: 16,
+                      color: call.state == CallState.active ? Colors.white : scheme.onSurface.withValues(alpha: 0.38),
+                    ),
+                    onPressed: call.state == CallState.active ? onAttendedTransfer : null,
+                  ),
+                  const SizedBox(width: 8),
                   if (call.state == CallState.incomingRinging) ...[
                     // Answer
                     IconButton.filled(
@@ -716,6 +872,89 @@ class _MultiCallCard extends ConsumerWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TransferStatusCard extends StatelessWidget {
+  const _TransferStatusCard({
+    required this.title,
+    required this.subtitle,
+    required this.buttonLabel,
+    this.onPressed,
+  });
+
+  final String title;
+  final String subtitle;
+  final String buttonLabel;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: scheme.primary.withValues(alpha: 0.2)),
+      ),
+      color: scheme.primaryContainer.withValues(alpha: 0.3),
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.swap_calls,
+                  color: scheme.primary,
+                  size: 28,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: scheme.onPrimaryContainer,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: scheme.onPrimaryContainer.withValues(alpha: 0.8),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: onPressed,
+                icon: const Icon(Icons.call_merge, size: 18),
+                label: Text(buttonLabel),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

@@ -106,7 +106,7 @@ class _TransferSheetState extends ConsumerState<TransferSheet> {
           ),
           const SizedBox(height: 6),
           Text(
-            'Choose attended transfer to talk to the destination first, then tap Complete transfer on the consultation call.',
+            'Enter a destination number or select from recent calls to perform a blind transfer.',
             style: Theme.of(
               context,
             ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
@@ -173,28 +173,17 @@ class _TransferSheetState extends ConsumerState<TransferSheet> {
             ),
           ],
           const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _submit(attended: true),
-                  icon: const Icon(Icons.call_merge),
-                  label: const Text('Attended'),
-                ),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: scheme.primary,
+                foregroundColor: scheme.onPrimary,
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: scheme.primary,
-                    foregroundColor: scheme.onPrimary,
-                  ),
-                  onPressed: () => _submit(attended: false),
-                  icon: const Icon(Icons.send),
-                  label: const Text('Blind'),
-                ),
-              ),
-            ],
+              onPressed: () => _submit(attended: false),
+              icon: const Icon(Icons.send),
+              label: const Text('Transfer'),
+            ),
           ),
         ],
       ),

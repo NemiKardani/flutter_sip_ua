@@ -85,9 +85,12 @@ void main() {
       final consultation = await ua.startAttendedTransfer(source!.id, '300');
       expect(consultation, isNotNull);
       expect(ua.callById(source.id)?.held, isTrue);
+      final consultationInvite = transport.sent.lastWhere(
+        (m) => m.method == 'INVITE',
+      );
       _acceptInvite(
         transport,
-        transport.sent.lastWhere((m) => m.method == 'INVITE'),
+        consultationInvite,
         remoteParty: '300',
         contact: 'sip:300@media.example.test',
         tag: 'consultation-tag',
@@ -97,12 +100,12 @@ void main() {
       expect(ua.completeAttendedTransfer(consultation!.id), isTrue);
       final refer = transport.sent.lastWhere((m) => m.method == 'REFER');
       final replaces = Uri.encodeQueryComponent(
-        '${source.id};to-tag=source-tag;from-tag=${sourceInvite.fromTag}',
+        '${consultation.id};to-tag=consultation-tag;from-tag=${consultationInvite.fromTag}',
       );
-      expect(refer.requestUri, 'sip:300@media.example.test');
+      expect(refer.requestUri, 'sip:200@media.example.test');
       expect(
         refer.header('Refer-To'),
-        '<sip:200@pbx.example.test?Replaces=$replaces>',
+        '<sip:300@media.example.test?Replaces=$replaces>',
       );
 
       await ua.stop();
@@ -151,9 +154,10 @@ void main() {
 
     final consultation = await ua.startAttendedTransfer(source.id, '789');
     expect(consultation, isNotNull);
+    final consultationInvite = transport.sent.lastWhere((m) => m.method == 'INVITE');
     _acceptInvite(
       transport,
-      transport.sent.lastWhere((m) => m.method == 'INVITE'),
+      consultationInvite,
       remoteParty: '789',
       contact: 'sip:789@media.example.test',
       tag: 'consultation-tag',
@@ -168,12 +172,12 @@ void main() {
     expect(ua.completeAttendedTransfer(consultation!.id), isTrue);
     final refer = transport.sent.lastWhere((m) => m.method == 'REFER');
     final replaces = Uri.encodeQueryComponent(
-      '${source.id};to-tag=source-tag;from-tag=${sourceInvite.fromTag}',
+      '${consultation.id};to-tag=consultation-tag;from-tag=${consultationInvite.fromTag}',
     );
-    expect(refer.requestUri, 'sip:789@media.example.test');
+    expect(refer.requestUri, 'sip:456@media.example.test');
     expect(
       refer.header('Refer-To'),
-      '<sip:456@pbx.example.test?Replaces=$replaces>',
+      '<sip:789@media.example.test?Replaces=$replaces>',
     );
 
     transport.receive(
@@ -191,7 +195,30 @@ void main() {
     );
     await Future<void>.delayed(Duration.zero);
 
-    final byes = transport.sent.where((m) => m.method == 'BYE').toList();
+    // After 202 Accepted response, the source call should NOT be hung up yet
+    var byes = transport.sent.where((m) => m.method == 'BYE').toList();
+    expect(byes, isEmpty);
+
+    // Simulate receiving NOTIFY with "SIP/2.0 200 OK" status to indicate successful transfer completion
+    transport.receive(
+      SipMessage.request(
+        'NOTIFY',
+        'sip:100@client.example.test',
+        headers: [
+          const MapEntry('Via', 'SIP/2.0/WS pbx.example.test;branch=z9hG4bK-notify'),
+          MapEntry('From', refer.header('To')!),
+          MapEntry('To', refer.header('From')!),
+          MapEntry('Call-ID', refer.callId!),
+          const MapEntry('CSeq', '2 NOTIFY'),
+          const MapEntry('Event', 'refer'),
+          const MapEntry('Subscription-State', 'terminated'),
+        ],
+        body: 'SIP/2.0 200 OK',
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    byes = transport.sent.where((m) => m.method == 'BYE').toList();
     expect(byes, hasLength(1));
     expect(byes.single.callId, source.id);
     expect(ua.callById(source.id), isNull);
