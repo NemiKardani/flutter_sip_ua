@@ -28,6 +28,10 @@ import 'log_path_stub.dart' if (dart.library.io) 'log_path_io.dart' as log_path;
 /// Storage key used to persist the SIP account across launches.
 const sipAccountPrefsKey = 'sip_account_v1';
 
+/// Toggle multiple simultaneous SIP dialogs. When disabled, the UA rejects
+/// new inbound/outbound calls while another call is active or ringing.
+const enableMultipleCalls = true;
+
 // ---------------------------------------------------------------------------
 // Infrastructure
 // ---------------------------------------------------------------------------
@@ -62,6 +66,7 @@ final sipUserAgentProvider = Provider<SipUserAgent>((ref) {
   late final SipUserAgent ua;
   ua = SipUserAgent(
     audioSinkFactory: () => PcmAudioSink(),
+    multipleCallsEnabled: enableMultipleCalls,
     rtpPacketTap: (flow, summary) {
       final message = '${flow.name.toUpperCase()} $summary';
       ua.logDiagnostic('RTP', message);

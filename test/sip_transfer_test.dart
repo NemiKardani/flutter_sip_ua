@@ -109,6 +109,103 @@ void main() {
       await transport.dispose();
     },
   );
+
+  test(
+    'holds the previous call and restores it when the active call ends',
+    () async {
+      final transport = _FakeTransport();
+      final ua = SipUserAgent(transportFactory: (_) => transport);
+      await ua.start(
+        SipAccount(
+          username: '100',
+          password: 'secret',
+          domain: 'pbx.example.test',
+          serverUri: Uri.parse('ws://pbx.example.test/sip'),
+        ),
+      );
+
+      final first = await ua.makeCall('200');
+      _acceptInvite(
+        transport,
+        transport.sent.lastWhere((m) => m.method == 'INVITE'),
+        remoteParty: '200',
+        contact: 'sip:200@media.example.test',
+        tag: 'first-tag',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(ua.callById(first!.id)?.state, CallState.active);
+      expect(ua.callById(first.id)?.held, isFalse);
+
+      final second = await ua.makeCall('300');
+      await Future<void>.delayed(Duration.zero);
+      expect(ua.callById(first.id)?.held, isTrue);
+
+      _acceptInvite(
+        transport,
+        transport.sent.lastWhere((m) => m.method == 'INVITE'),
+        remoteParty: '300',
+        contact: 'sip:300@media.example.test',
+        tag: 'second-tag',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(ua.callById(second!.id)?.held, isFalse);
+      expect(ua.callById(first.id)?.held, isTrue);
+
+      transport.receive(
+        _byeFor(
+          callId: second.id,
+          from: '<sip:300@pbx.example.test>;tag=second-tag',
+          to: '<sip:100@pbx.example.test>',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(ua.callById(second.id), isNull);
+      expect(ua.callById(first.id)?.state, CallState.active);
+      expect(ua.callById(first.id)?.held, isFalse);
+
+      await ua.stop();
+      await transport.dispose();
+    },
+  );
+
+  test('can disable multiple calls and reject new dialogs', () async {
+    final transport = _FakeTransport();
+    final ua = SipUserAgent(
+      multipleCallsEnabled: false,
+      transportFactory: (_) => transport,
+    );
+    await ua.start(
+      SipAccount(
+        username: '100',
+        password: 'secret',
+        domain: 'pbx.example.test',
+        serverUri: Uri.parse('ws://pbx.example.test/sip'),
+      ),
+    );
+
+    final first = await ua.makeCall('200');
+    _acceptInvite(
+      transport,
+      transport.sent.lastWhere((m) => m.method == 'INVITE'),
+      remoteParty: '200',
+      contact: 'sip:200@media.example.test',
+      tag: 'first-tag',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(first, isNotNull);
+    expect(await ua.makeCall('300'), isNull);
+
+    transport.receive(_incomingInvite('incoming-call'));
+    await Future<void>.delayed(Duration.zero);
+    final busy = transport.sent.lastWhere((m) => m.statusCode == 486);
+    expect(busy.reasonPhrase, 'Busy Here');
+
+    await ua.stop();
+    await transport.dispose();
+  });
 }
 
 void _acceptInvite(
@@ -131,6 +228,42 @@ void _acceptInvite(
         MapEntry('Contact', '<$contact>'),
       ],
     ),
+  );
+}
+
+SipMessage _byeFor({
+  required String callId,
+  required String from,
+  required String to,
+}) {
+  return SipMessage.request(
+    'BYE',
+    'sip:100@client.example.test',
+    headers: [
+      const MapEntry('Via', 'SIP/2.0/WS pbx.example.test;branch=z9hG4bK-bye'),
+      MapEntry('From', from),
+      MapEntry('To', to),
+      MapEntry('Call-ID', callId),
+      const MapEntry('CSeq', '1 BYE'),
+    ],
+  );
+}
+
+SipMessage _incomingInvite(String callId) {
+  return SipMessage.request(
+    'INVITE',
+    'sip:100@client.example.test',
+    headers: [
+      const MapEntry(
+        'Via',
+        'SIP/2.0/WS pbx.example.test;branch=z9hG4bK-invite',
+      ),
+      const MapEntry('From', '<sip:400@pbx.example.test>;tag=incoming-tag'),
+      const MapEntry('To', '<sip:100@pbx.example.test>'),
+      MapEntry('Call-ID', callId),
+      const MapEntry('CSeq', '1 INVITE'),
+      const MapEntry('Contact', '<sip:400@media.example.test>'),
+    ],
   );
 }
 

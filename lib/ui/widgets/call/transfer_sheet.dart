@@ -64,6 +64,13 @@ class _TransferSheetState extends State<TransferSheet> {
               context,
             ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
+          const SizedBox(height: 6),
+          Text(
+            'Choose attended transfer to talk to the destination first, then tap Complete transfer on the consultation call.',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
           const SizedBox(height: 12),
           TextField(
             controller: _ctl,
@@ -83,7 +90,7 @@ class _TransferSheetState extends State<TransferSheet> {
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: () => _submit(attended: true),
-                  icon: const Icon(Icons.group_add),
+                  icon: const Icon(Icons.call_merge),
                   label: const Text('Attended'),
                 ),
               ),

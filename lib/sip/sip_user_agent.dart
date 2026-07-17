@@ -134,6 +134,7 @@ class SipUserAgent {
     String? publicMediaAddress,
     RtpPacketTap? rtpPacketTap,
     SipTransport Function(Uri serverUri)? transportFactory,
+    this.multipleCallsEnabled = true,
   }) : _rng = rng ?? Random.secure(),
        _digest = DigestClient(),
        _audioSinkFactory = audioSinkFactory,
@@ -155,6 +156,11 @@ class SipUserAgent {
   /// Optional RTP/RTCP packet tap. See [RtpPacketTap].
   final RtpPacketTap? _rtpPacketTap;
   final SipTransport Function(Uri serverUri) _transportFactory;
+
+  /// Enables multiple simultaneous SIP dialogs while keeping only one call
+  /// media-active locally. Set to `false` to preserve strict single-call
+  /// behavior: new inbound/outbound calls are rejected while a dialog exists.
+  final bool multipleCallsEnabled;
 
   /// Optional sink that records every wire-format SIP message to disk.
   /// Set with [attachFileLogger] before calling [start] for full coverage.
@@ -179,6 +185,8 @@ class SipUserAgent {
   DigestChallenge? _pendingChallenge;
 
   final Map<String, _CallContext> _calls = {};
+  final List<String> _activeCallHistory = [];
+  String? _activeCallId;
 
   final _registrationCtl = StreamController<RegistrationState>.broadcast();
   final _callCtl = StreamController<SipCall>.broadcast();
@@ -278,6 +286,15 @@ class SipUserAgent {
       );
       return null;
     }
+    if (!multipleCallsEnabled && _hasLiveCall) {
+      logDiagnostic(
+        'CALL',
+        'makeCall rejected: another call is already in progress',
+        level: 'WARN',
+      );
+      return null;
+    }
+    if (multipleCallsEnabled) _holdActiveCallForNewDialog();
     final targetUri = _normaliseTarget(target, acc.domain);
     final callId = _uuid.v4();
     final fromTag = _shortTag();
@@ -384,13 +401,11 @@ class SipUserAgent {
     final ctx = _calls[callId];
     if (ctx == null) return null;
     if (ctx.call.state != CallState.active) return null;
-    if (ctx.held == hold) return ctx.held;
-    ctx.held = hold;
-    ctx.call.held = hold;
-    final media = ctx.media;
-    if (media != null) media.muted = hold;
-    _sendReinvite(ctx);
-    _emitCall(ctx.call);
+    if (!hold && multipleCallsEnabled) {
+      _activateCall(ctx);
+      return ctx.held;
+    }
+    _setHoldState(ctx, hold, sendReinvite: true);
     return ctx.held;
   }
 
@@ -659,6 +674,7 @@ class SipUserAgent {
       extra: extra,
     );
     ctx.call.state = CallState.active;
+    if (multipleCallsEnabled) _activateCall(ctx, emitTarget: false);
     _emitCall(ctx.call);
     _armSessionTimers(ctx);
     if (remoteAudio != null) {
@@ -814,6 +830,9 @@ class SipUserAgent {
         _sendAck(ctx, msg);
         final wasRefresh = ctx.call.state == CallState.active;
         ctx.call.state = CallState.active;
+        if (!wasRefresh && multipleCallsEnabled) {
+          _activateCall(ctx, emitTarget: false);
+        }
         _emitCall(ctx.call);
         if (!wasRefresh) {
           _armSessionTimers(ctx);
@@ -997,6 +1016,15 @@ class SipUserAgent {
 
     _send(_buildResponseFor(msg, 100, 'Trying'));
     final localTag = _shortTag();
+    if (!multipleCallsEnabled && _hasLiveCall) {
+      _send(_buildResponseFor(msg, 486, 'Busy Here', addToTag: localTag));
+      logDiagnostic(
+        'CALL',
+        'incoming INVITE rejected: another call is already in progress',
+        level: 'WARN',
+      );
+      return;
+    }
 
     // Pre-screen Session-Expires so we can reject early with 422 if needed.
     final acc = _account;
@@ -1587,17 +1615,6 @@ class SipUserAgent {
 
   int _nextCseq() => DateTime.now().millisecondsSinceEpoch & 0x3fffffff;
 
-  String _buildOfferSdp(SipAccount acc) {
-    // Backwards-compatible offer used when no MediaSession is bound
-    // (re-INVITE refresh paths). Real port/codec come from MediaSession
-    // when one exists.
-    return buildG711Offer(
-      username: acc.username,
-      localHost: _mediaLocalHost(),
-      localPort: 0,
-    );
-  }
-
   /// Hold-aware variant: uses the call's bound RTP port if available and
   /// flips `a=sendonly` while the call is on hold so the peer knows to
   /// stop sending audio.
@@ -1744,6 +1761,76 @@ class SipUserAgent {
     }
   }
 
+  bool get _hasLiveCall => _calls.values.any(
+    (ctx) =>
+        ctx.call.state == CallState.active ||
+        ctx.call.state == CallState.incomingRinging ||
+        ctx.call.state == CallState.outgoingRinging,
+  );
+
+  void _holdActiveCallForNewDialog() {
+    final activeId = _activeCallId;
+    if (activeId == null) return;
+    final active = _calls[activeId];
+    if (active == null || active.call.state != CallState.active) return;
+    _setHoldState(active, true, sendReinvite: true);
+  }
+
+  void _activateCall(_CallContext target, {bool emitTarget = true}) {
+    if (target.call.state != CallState.active) return;
+    final previousId = _activeCallId;
+    if (previousId != null && previousId != target.call.id) {
+      _activeCallHistory.remove(previousId);
+      _activeCallHistory.add(previousId);
+    }
+
+    for (final ctx in _calls.values) {
+      if (ctx.call.id == target.call.id) continue;
+      if (ctx.call.state == CallState.active && !ctx.held) {
+        _setHoldState(ctx, true, sendReinvite: true);
+      }
+    }
+
+    _activeCallId = target.call.id;
+    _activeCallHistory.remove(target.call.id);
+    _setHoldState(target, false, sendReinvite: false, emit: emitTarget);
+  }
+
+  void _restorePreviousActiveCall(String endedCallId) {
+    if (!multipleCallsEnabled || _activeCallId != endedCallId) return;
+    _activeCallId = null;
+    _activeCallHistory.remove(endedCallId);
+
+    while (_activeCallHistory.isNotEmpty) {
+      final candidateId = _activeCallHistory.removeLast();
+      final candidate = _calls[candidateId];
+      if (candidate == null || candidate.call.state != CallState.active) {
+        continue;
+      }
+      if (candidate.transferPending || candidate.attendedTransferCompleting) {
+        continue;
+      }
+      _activateCall(candidate);
+      return;
+    }
+  }
+
+  void _setHoldState(
+    _CallContext ctx,
+    bool hold, {
+    required bool sendReinvite,
+    bool emit = true,
+  }) {
+    if (ctx.call.state != CallState.active) return;
+    if (ctx.held == hold) return;
+    ctx.held = hold;
+    ctx.call.held = hold;
+    final media = ctx.media;
+    if (media != null) media.muted = hold;
+    if (sendReinvite) _sendReinvite(ctx);
+    if (emit) _emitCall(ctx.call);
+  }
+
   static String? _extractBranch(String viaHeader) {
     final m = RegExp(
       r'branch=([^\s;,>]+)',
@@ -1753,6 +1840,7 @@ class SipUserAgent {
   }
 
   void _markEnded(_CallContext ctx) {
+    final endedCallId = ctx.call.id;
     ctx.cancelTimers();
     final media = ctx.media;
     ctx.media = null;
@@ -1768,7 +1856,9 @@ class SipUserAgent {
     ctx.call.endedAt = DateTime.now();
     _emitCall(ctx.call);
     _calls.remove(ctx.call.id);
+    _activeCallHistory.remove(endedCallId);
     _finishAttendedTransferContext(ctx);
+    _restorePreviousActiveCall(endedCallId);
   }
 
   void _finishAttendedTransferContext(_CallContext ctx) {

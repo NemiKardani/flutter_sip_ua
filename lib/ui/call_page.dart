@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/sip_providers.dart';
 import '../sip/sip_user_agent.dart';
+import 'bp_palette.dart';
 import 'widgets/call/call_action_panels.dart';
 import 'widgets/call/call_backdrop.dart';
 import 'widgets/call/call_party_card.dart';
@@ -64,10 +65,7 @@ class _CallPageState extends ConsumerState<CallPage>
         _startTicker();
       }
     }
-    _sub = _ua.callStream.listen((c) {
-      if (c.id != widget.callId) return;
-      _onUpdate(c);
-    });
+    _sub = _ua.callStream.listen(_onAnyCallUpdate);
   }
 
   void _startTicker() {
@@ -90,6 +88,19 @@ class _CallPageState extends ConsumerState<CallPage>
       // Don't auto-pop — show the ended summary so the user can
       // dismiss it or place a call back.
     }
+  }
+
+  void _onAnyCallUpdate(SipCall c) {
+    if (c.id == widget.callId) {
+      _onUpdate(c);
+      return;
+    }
+    final current = _call;
+    final shouldFollowActiveCall =
+        c.state == CallState.active &&
+        !c.held &&
+        (current == null || current.state == CallState.ended || current.held);
+    if (shouldFollowActiveCall) _switchToCall(c.id);
   }
 
   @override
@@ -173,8 +184,24 @@ class _CallPageState extends ConsumerState<CallPage>
     if (sent) Navigator.of(context).maybePop();
   }
 
-  void _onAddCall() {
-    _toast('Add-call (conference) not yet implemented');
+  Future<void> _onAddCall() async {
+    if (!enableMultipleCalls) {
+      _toast('Multiple calls are disabled');
+      return;
+    }
+    final target = await _showDialTargetSheet(
+      title: 'Add another call',
+      actionLabel: 'Call',
+      icon: Icons.person_add_alt_1,
+    );
+    if (target == null || !mounted) return;
+    final call = await _ua.makeCall(target);
+    if (!mounted) return;
+    if (call == null) {
+      _toast('Cannot start another call right now');
+      return;
+    }
+    _switchToCall(call.id);
   }
 
   void _onCallBack() {
@@ -191,6 +218,72 @@ class _CallPageState extends ConsumerState<CallPage>
         content: Text(msg),
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<String?> _showDialTargetSheet({
+    required String title,
+    required String actionLabel,
+    required IconData icon,
+  }) {
+    final controller = TextEditingController();
+    return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        final viewInsets = MediaQuery.viewInsetsOf(ctx).bottom;
+        return Padding(
+          padding: EdgeInsets.fromLTRB(24, 4, 24, viewInsets + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                title,
+                style: Theme.of(
+                  ctx,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                keyboardType: TextInputType.text,
+                decoration: InputDecoration(
+                  border: const OutlineInputBorder(),
+                  labelText: 'Destination',
+                  hintText: 'extension or sip:user@host',
+                  prefixIcon: Icon(icon),
+                ),
+                onSubmitted: (_) {
+                  final target = controller.text.trim();
+                  if (target.isNotEmpty) Navigator.of(ctx).pop(target);
+                },
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () {
+                  final target = controller.text.trim();
+                  if (target.isNotEmpty) Navigator.of(ctx).pop(target);
+                },
+                icon: Icon(icon),
+                label: Text(actionLabel),
+              ),
+            ],
+          ),
+        );
+      },
+    ).whenComplete(controller.dispose);
+  }
+
+  void _switchToCall(String callId) {
+    if (!mounted || callId == widget.callId) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        settings: const RouteSettings(name: 'call'),
+        builder: (_) => CallPage(callId: callId),
       ),
     );
   }
@@ -224,6 +317,16 @@ class _CallPageState extends ConsumerState<CallPage>
   }
 
   Widget _buildContent(SipCall c, CallState state) {
+    final liveCalls = ref
+        .watch(callsProvider)
+        .recents
+        .where(
+          (call) =>
+              call.state == CallState.active ||
+              call.state == CallState.incomingRinging ||
+              call.state == CallState.outgoingRinging,
+        )
+        .toList();
     return LayoutBuilder(
       builder: (context, constraints) {
         return SingleChildScrollView(
@@ -252,6 +355,14 @@ class _CallPageState extends ConsumerState<CallPage>
                       elapsed: _elapsed,
                       pulse: _pulse,
                     ),
+                    if (enableMultipleCalls && liveCalls.length > 1) ...[
+                      const SizedBox(height: 18),
+                      _MultiCallTray(
+                        calls: liveCalls,
+                        selectedCallId: c.id,
+                        onSwitch: _switchToCall,
+                      ),
+                    ],
                     if (_dtmfHistory.isNotEmpty && state == CallState.active)
                       Padding(
                         padding: const EdgeInsets.only(top: 12),
@@ -337,5 +448,138 @@ class _CallPageState extends ConsumerState<CallPage>
       case CallState.idle:
         return const SizedBox.shrink();
     }
+  }
+}
+
+class _MultiCallTray extends StatelessWidget {
+  const _MultiCallTray({
+    required this.calls,
+    required this.selectedCallId,
+    required this.onSwitch,
+  });
+
+  final List<SipCall> calls;
+  final String selectedCallId;
+  final ValueChanged<String> onSwitch;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.58),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.call_split, size: 18, color: scheme.primary),
+              const SizedBox(width: 8),
+              Text(
+                'Live calls',
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final call in calls)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: _CallLineChip(
+                      call: call,
+                      selected: call.id == selectedCallId,
+                      onTap: () => onSwitch(call.id),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CallLineChip extends StatelessWidget {
+  const _CallLineChip({
+    required this.call,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final SipCall call;
+  final bool selected;
+  final VoidCallback onTap;
+
+  String get _name {
+    var value = call.remoteParty;
+    if (value.startsWith('sip:')) value = value.substring(4);
+    final at = value.indexOf('@');
+    return at > 0 ? value.substring(0, at) : value;
+  }
+
+  String get _label {
+    return switch (call.state) {
+      CallState.incomingRinging => 'Incoming',
+      CallState.outgoingRinging => 'Calling',
+      CallState.active => call.held ? 'On hold' : 'Active',
+      CallState.ended => 'Ended',
+      CallState.idle => 'Idle',
+    };
+  }
+
+  IconData get _icon {
+    return switch (call.state) {
+      CallState.incomingRinging => Icons.call_received,
+      CallState.outgoingRinging => Icons.call_made,
+      CallState.active => call.held ? Icons.pause : Icons.call,
+      CallState.ended => Icons.call_end,
+      CallState.idle => Icons.phone_disabled,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final bp = Theme.of(context).bp;
+    final color = switch (call.state) {
+      CallState.active => call.held ? bp.holdingCall : bp.activeCall,
+      CallState.incomingRinging ||
+      CallState.outgoingRinging => bp.presenceRinging,
+      CallState.ended => bp.hangup,
+      CallState.idle => scheme.outline,
+    };
+    return ActionChip(
+      avatar: Icon(_icon, size: 18, color: selected ? scheme.onPrimary : color),
+      label: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          Text(_label, style: Theme.of(context).textTheme.labelSmall),
+        ],
+      ),
+      tooltip: selected ? 'Current call' : 'Switch to $_name',
+      backgroundColor: selected ? scheme.primary : scheme.surface,
+      side: BorderSide(color: selected ? scheme.primary : color),
+      labelStyle: TextStyle(color: selected ? scheme.onPrimary : null),
+      onPressed: selected ? null : onTap,
+    );
   }
 }
