@@ -700,6 +700,7 @@ class SipUserAgent {
       ctx.refresher ??= 'uas';
       extra['Require'] = 'timer';
       extra['Session-Expires'] = '${ctx.proposedSE};refresher=${ctx.refresher}';
+      ctx.negotiatedSE = ctx.proposedSE;
     }
     _respondToInvite(
       ctx,
@@ -1164,7 +1165,8 @@ class SipUserAgent {
     ctx.cancelTimers();
     final se = ctx.negotiatedSE;
     if (se == null) return;
-    if (ctx.refresher == 'uac') {
+    final weAreRefresher = ctx.refresher == (ctx.call.outgoing ? 'uac' : 'uas');
+    if (weAreRefresher) {
       // Refresh at half-interval.
       final delay = Duration(seconds: (se / 2).floor().clamp(1, 1 << 30));
       ctx.refreshTimer = Timer(delay, () => _sendRefreshInvite(ctx));
@@ -1459,7 +1461,7 @@ class SipUserAgent {
         'Contact',
         '<sip:${account.username}@$localHost;transport=$scheme>',
       ),
-      const MapEntry('User-Agent', 'flutter_sip_ua/1.0 (pure-dart)'),
+      const MapEntry('User-Agent', 'Sheerbit'),
     ];
     for (final r in routeHeaders) {
       headers.add(MapEntry('Route', '<$r>'));
@@ -1511,7 +1513,7 @@ class SipUserAgent {
         ),
       );
     }
-    headers.add(const MapEntry('User-Agent', 'flutter_sip_ua/1.0'));
+    headers.add(const MapEntry('User-Agent', 'Sheerbit'));
     if (extra != null) {
       extra.forEach((k, v) => headers.add(MapEntry(k, v)));
     }
@@ -1557,13 +1559,16 @@ class SipUserAgent {
     final remoteTarget = isTwoXx
         ? (ctx.remoteContact ?? ctx.call.remoteParty)
         : ctx.call.remoteParty;
-    final branch = isTwoXx ? _branch() : ctx.branch;
+    final branch = isTwoXx
+        ? _branch()
+        : (_extractBranch(resp.header('Via') ?? '') ?? ctx.branch);
+    final cseq = resp.cseqNumber ?? ctx.cseq;
     final ack = _buildRequest(
       method: 'ACK',
       requestUri: remoteTarget,
       callId: ctx.call.id,
       fromTag: ctx.localTag,
-      cseq: ctx.cseq,
+      cseq: cseq,
       branch: branch,
       target: remoteTarget,
       account: acc,
@@ -1982,17 +1987,13 @@ class SipUserAgent {
   }
 
   List<String> _sipDetailLines(SipMessage msg) {
-    final lines = <String>[
-      'from=${extractUri(msg.header("From") ?? "")} to=${extractUri(msg.header("To") ?? "")}',
-      'via=${msg.header("Via") ?? "-"}',
-    ];
-    final contact = msg.header('Contact');
-    if (contact != null && contact.isNotEmpty) {
-      lines.add('contact=${extractUri(contact)}');
+    final lines = <String>[];
+    for (final h in msg.headers) {
+      lines.add('${h.key}: ${h.value}');
     }
     final body = msg.body.trim();
     if (body.isNotEmpty) {
-      lines.add('body=${body.length}b');
+      lines.add('');
       for (final rawLine in body.split('\n')) {
         final trimmed = rawLine.trimRight();
         if (trimmed.isNotEmpty) lines.add('| $trimmed');

@@ -227,12 +227,13 @@ class _CallPageState extends ConsumerState<CallPage>
     required String actionLabel,
     required IconData icon,
   }) {
-    final controller = TextEditingController();
+    
     return showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
       builder: (ctx) {
+        final controller = TextEditingController();
         final viewInsets = MediaQuery.viewInsetsOf(ctx).bottom;
         return Padding(
           padding: EdgeInsets.fromLTRB(24, 4, 24, viewInsets + 24),
@@ -275,7 +276,9 @@ class _CallPageState extends ConsumerState<CallPage>
           ),
         );
       },
-    ).whenComplete(controller.dispose);
+    ).whenComplete(() {
+      FocusManager.instance.primaryFocus?.unfocus();
+    },);
   }
 
   void _switchToCall(String callId) {
