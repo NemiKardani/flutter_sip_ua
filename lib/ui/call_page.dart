@@ -279,7 +279,9 @@ class _CallPageState extends ConsumerState<CallPage>
   }
 
   void _switchToCall(String callId) {
-    if (!mounted || callId == widget.callId) return;
+    if (!mounted) return;
+    _ua.activateCall(callId);
+    if (callId == widget.callId) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         settings: const RouteSettings(name: 'call'),
@@ -560,26 +562,68 @@ class _CallLineChip extends StatelessWidget {
       CallState.ended => bp.hangup,
       CallState.idle => scheme.outline,
     };
-    return ActionChip(
-      avatar: Icon(_icon, size: 18, color: selected ? scheme.onPrimary : color),
-      label: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            _name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.w700),
+    final foreground = selected ? scheme.onPrimary : scheme.onSurface;
+    final canTap = !selected || call.held;
+    final tooltip = selected
+        ? (call.held ? 'Resume $_name' : 'Current call')
+        : 'Switch to $_name';
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: selected ? scheme.primary : scheme.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(color: selected ? scheme.primary : color),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: canTap ? onTap : null,
+          child: SizedBox(
+            width: 152,
+            height: 58,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Row(
+                children: [
+                  Icon(
+                    _icon,
+                    size: 18,
+                    color: selected ? scheme.onPrimary : color,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(
+                                color: foreground,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                        Text(
+                          _label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: foreground.withValues(alpha: 0.78),
+                              ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
-          Text(_label, style: Theme.of(context).textTheme.labelSmall),
-        ],
+        ),
       ),
-      tooltip: selected ? 'Current call' : 'Switch to $_name',
-      backgroundColor: selected ? scheme.primary : scheme.surface,
-      side: BorderSide(color: selected ? scheme.primary : color),
-      labelStyle: TextStyle(color: selected ? scheme.onPrimary : null),
-      onPressed: selected ? null : onTap,
     );
   }
 }

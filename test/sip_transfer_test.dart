@@ -110,6 +110,98 @@ void main() {
     },
   );
 
+  test('attended transfer only disconnects the selected source call', () async {
+    final transport = _FakeTransport();
+    final ua = SipUserAgent(transportFactory: (_) => transport);
+    await ua.start(
+      SipAccount(
+        username: '100',
+        password: 'secret',
+        domain: 'pbx.example.test',
+        serverUri: Uri.parse('ws://pbx.example.test/sip'),
+      ),
+    );
+
+    final unrelated = await ua.makeCall('123');
+    _acceptInvite(
+      transport,
+      transport.sent.lastWhere((m) => m.method == 'INVITE'),
+      remoteParty: '123',
+      contact: 'sip:123@media.example.test',
+      tag: 'unrelated-tag',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    final source = await ua.makeCall('456');
+    final sourceInvite = transport.sent.lastWhere((m) => m.method == 'INVITE');
+    _acceptInvite(
+      transport,
+      sourceInvite,
+      remoteParty: '456',
+      contact: 'sip:456@media.example.test',
+      tag: 'source-tag',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(unrelated, isNotNull);
+    expect(source, isNotNull);
+    expect(ua.setHold(unrelated!.id, false), isFalse);
+    expect(ua.callById(unrelated.id)?.held, isFalse);
+    expect(ua.callById(source!.id)?.held, isTrue);
+
+    final consultation = await ua.startAttendedTransfer(source.id, '789');
+    expect(consultation, isNotNull);
+    _acceptInvite(
+      transport,
+      transport.sent.lastWhere((m) => m.method == 'INVITE'),
+      remoteParty: '789',
+      contact: 'sip:789@media.example.test',
+      tag: 'consultation-tag',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(ua.callById(unrelated.id)?.state, CallState.active);
+    expect(ua.callById(unrelated.id)?.held, isFalse);
+    expect(ua.callById(source.id)?.state, CallState.active);
+    expect(ua.callById(source.id)?.held, isTrue);
+
+    expect(ua.completeAttendedTransfer(consultation!.id), isTrue);
+    final refer = transport.sent.lastWhere((m) => m.method == 'REFER');
+    final replaces = Uri.encodeQueryComponent(
+      '${source.id};to-tag=source-tag;from-tag=${sourceInvite.fromTag}',
+    );
+    expect(refer.requestUri, 'sip:789@media.example.test');
+    expect(
+      refer.header('Refer-To'),
+      '<sip:456@pbx.example.test?Replaces=$replaces>',
+    );
+
+    transport.receive(
+      SipMessage.response(
+        code: 202,
+        reason: 'Accepted',
+        headers: [
+          MapEntry('Via', refer.header('Via')!),
+          MapEntry('From', refer.header('From')!),
+          MapEntry('To', refer.header('To')!),
+          MapEntry('Call-ID', refer.callId!),
+          MapEntry('CSeq', refer.cseq!),
+        ],
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    final byes = transport.sent.where((m) => m.method == 'BYE').toList();
+    expect(byes, hasLength(1));
+    expect(byes.single.callId, source.id);
+    expect(ua.callById(source.id), isNull);
+    expect(ua.callById(unrelated.id)?.state, CallState.active);
+    expect(ua.callById(unrelated.id)?.held, isFalse);
+
+    await ua.stop();
+    await transport.dispose();
+  });
+
   test(
     'holds the previous call and restores it when the active call ends',
     () async {
@@ -164,6 +256,54 @@ void main() {
       expect(ua.callById(second.id), isNull);
       expect(ua.callById(first.id)?.state, CallState.active);
       expect(ua.callById(first.id)?.held, isFalse);
+
+      await ua.stop();
+      await transport.dispose();
+    },
+  );
+
+  test(
+    'activates a selected held call and holds the previous active call',
+    () async {
+      final transport = _FakeTransport();
+      final ua = SipUserAgent(transportFactory: (_) => transport);
+      await ua.start(
+        SipAccount(
+          username: '100',
+          password: 'secret',
+          domain: 'pbx.example.test',
+          serverUri: Uri.parse('ws://pbx.example.test/sip'),
+        ),
+      );
+
+      final first = await ua.makeCall('200');
+      _acceptInvite(
+        transport,
+        transport.sent.lastWhere((m) => m.method == 'INVITE'),
+        remoteParty: '200',
+        contact: 'sip:200@media.example.test',
+        tag: 'first-tag',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final second = await ua.makeCall('300');
+      _acceptInvite(
+        transport,
+        transport.sent.lastWhere((m) => m.method == 'INVITE'),
+        remoteParty: '300',
+        contact: 'sip:300@media.example.test',
+        tag: 'second-tag',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(ua.callById(first!.id)?.held, isTrue);
+      expect(ua.callById(second!.id)?.held, isFalse);
+
+      expect(ua.activateCall(first.id), isTrue);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(ua.callById(first.id)?.held, isFalse);
+      expect(ua.callById(second.id)?.held, isTrue);
 
       await ua.stop();
       await transport.dispose();

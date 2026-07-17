@@ -274,6 +274,21 @@ class SipUserAgent {
     VideoEncoder? videoEncoder,
     VideoDecoder? videoDecoder,
   }) async {
+    return _makeCall(
+      target,
+      withVideo: withVideo,
+      videoEncoder: videoEncoder,
+      videoDecoder: videoDecoder,
+    );
+  }
+
+  Future<SipCall?> _makeCall(
+    String target, {
+    bool withVideo = false,
+    VideoEncoder? videoEncoder,
+    VideoDecoder? videoDecoder,
+    bool holdActiveCallForNewDialog = true,
+  }) async {
     final acc = _account;
     final tx = _transport;
     if (acc == null || tx == null || !tx.isConnected) return null;
@@ -294,7 +309,9 @@ class SipUserAgent {
       );
       return null;
     }
-    if (multipleCallsEnabled) _holdActiveCallForNewDialog();
+    if (multipleCallsEnabled && holdActiveCallForNewDialog) {
+      _holdActiveCallForNewDialog();
+    }
     final targetUri = _normaliseTarget(target, acc.domain);
     final callId = _uuid.v4();
     final fromTag = _shortTag();
@@ -370,6 +387,7 @@ class SipUserAgent {
       proposedSE: acc.sessionExpires,
       minSE: acc.minSE,
       sdpSessionId: sdpSid,
+      activateOnAnswer: holdActiveCallForNewDialog,
     );
     ctx.media = media;
     ctx.video = video;
@@ -402,7 +420,7 @@ class SipUserAgent {
     if (ctx == null) return null;
     if (ctx.call.state != CallState.active) return null;
     if (!hold && multipleCallsEnabled) {
-      _activateCall(ctx);
+      _activateCall(ctx, resumeTargetWithReinvite: ctx.held);
       return ctx.held;
     }
     _setHoldState(ctx, hold, sendReinvite: true);
@@ -411,6 +429,16 @@ class SipUserAgent {
 
   /// Whether [callId] is currently on hold.
   bool? isHeld(String callId) => _calls[callId]?.held;
+
+  /// Make [callId] the locally active media call. Other active dialogs are
+  /// placed on hold when multiple calls are enabled.
+  bool activateCall(String callId) {
+    if (!multipleCallsEnabled) return false;
+    final ctx = _calls[callId];
+    if (ctx == null || ctx.call.state != CallState.active) return false;
+    _activateCall(ctx, resumeTargetWithReinvite: ctx.held);
+    return true;
+  }
 
   /// Starts an attended transfer by holding [callId] and placing a
   /// consultation call to [target]. Call [completeAttendedTransfer] once the
@@ -426,7 +454,10 @@ class SipUserAgent {
     }
     if (!source.held && setHold(callId, true) == null) return null;
 
-    final consultation = await makeCall(target);
+    final consultation = await _makeCall(
+      target,
+      holdActiveCallForNewDialog: false,
+    );
     if (consultation == null) {
       setHold(callId, false);
       return null;
@@ -830,7 +861,7 @@ class SipUserAgent {
         _sendAck(ctx, msg);
         final wasRefresh = ctx.call.state == CallState.active;
         ctx.call.state = CallState.active;
-        if (!wasRefresh && multipleCallsEnabled) {
+        if (!wasRefresh && multipleCallsEnabled && ctx.activateOnAnswer) {
           _activateCall(ctx, emitTarget: false);
         }
         _emitCall(ctx.call);
@@ -876,6 +907,11 @@ class SipUserAgent {
       _emitCall(ctx.call);
       if (code >= 200 && code < 300) {
         logDiagnostic('TRANSFER', 'REFER accepted for ${ctx.call.id}');
+        final sourceId = ctx.transferSourceCallId;
+        if (sourceId != null) {
+          final source = _calls[sourceId];
+          if (source != null) hangup(sourceId);
+        }
       } else {
         final sourceId = ctx.transferSourceCallId;
         if (sourceId != null) {
@@ -1776,7 +1812,11 @@ class SipUserAgent {
     _setHoldState(active, true, sendReinvite: true);
   }
 
-  void _activateCall(_CallContext target, {bool emitTarget = true}) {
+  void _activateCall(
+    _CallContext target, {
+    bool emitTarget = true,
+    bool resumeTargetWithReinvite = false,
+  }) {
     if (target.call.state != CallState.active) return;
     final previousId = _activeCallId;
     if (previousId != null && previousId != target.call.id) {
@@ -1793,7 +1833,12 @@ class SipUserAgent {
 
     _activeCallId = target.call.id;
     _activeCallHistory.remove(target.call.id);
-    _setHoldState(target, false, sendReinvite: false, emit: emitTarget);
+    _setHoldState(
+      target,
+      false,
+      sendReinvite: resumeTargetWithReinvite,
+      emit: emitTarget,
+    );
   }
 
   void _restorePreviousActiveCall(String endedCallId) {
@@ -1810,7 +1855,7 @@ class SipUserAgent {
       if (candidate.transferPending || candidate.attendedTransferCompleting) {
         continue;
       }
-      _activateCall(candidate);
+      _activateCall(candidate, resumeTargetWithReinvite: candidate.held);
       return;
     }
   }
@@ -2117,6 +2162,7 @@ class _CallContext {
     required this.branch,
     this.proposedSE,
     this.minSE,
+    this.activateOnAnswer = true,
     int? sdpSessionId,
   }) : sdpSessionId =
            sdpSessionId ?? DateTime.now().millisecondsSinceEpoch ~/ 1000,
@@ -2140,6 +2186,10 @@ class _CallContext {
 
   /// Stable `o=` session id for the lifetime of this dialog (RFC 4566 §5.2).
   final int sdpSessionId;
+
+  /// Whether a newly answered outgoing dialog should become the local active
+  /// call and hold other live dialogs.
+  final bool activateOnAnswer;
 
   /// Monotonically incremented `o=` version. Bump via [bumpSdpVersion]
   /// before every outgoing offer/answer that re-describes the session.
