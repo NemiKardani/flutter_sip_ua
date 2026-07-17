@@ -56,6 +56,11 @@ class _CallPageState extends ConsumerState<CallPage>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(callPageCountProvider.notifier).increment();
+      }
+    });
     final initial = _ua.callById(widget.callId);
     if (initial != null) {
       _call = initial;
@@ -108,6 +113,9 @@ class _CallPageState extends ConsumerState<CallPage>
     _sub?.cancel();
     _ticker?.cancel();
     _pulse.dispose();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(callPageCountProvider.notifier).decrement();
+    });
     super.dispose();
   }
 
@@ -146,7 +154,11 @@ class _CallPageState extends ConsumerState<CallPage>
   }
 
   Future<void> _onTransfer() async {
-    final req = await TransferSheet.show(context);
+    final req = await TransferSheet.show(
+      context,
+      currentCallId: widget.callId,
+      currentCallParty: _call?.remoteParty ?? '',
+    );
     if (req == null || !mounted) return;
     if (req.attended) {
       final consultation = await _ua.startAttendedTransfer(
@@ -158,12 +170,7 @@ class _CallPageState extends ConsumerState<CallPage>
         _toast('Cannot start an attended transfer right now');
         return;
       }
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          settings: const RouteSettings(name: 'call'),
-          builder: (_) => CallPage(callId: consultation.id),
-        ),
-      );
+      _switchToCall(consultation.id);
       return;
     }
     final sent = _ua.transferCall(widget.callId, req.target);
@@ -472,7 +479,7 @@ class _MultiCallTray extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHighest.withValues(alpha: 0.58),
         borderRadius: BorderRadius.circular(22),
@@ -486,29 +493,24 @@ class _MultiCallTray extends StatelessWidget {
               Icon(Icons.call_split, size: 18, color: scheme.primary),
               const SizedBox(width: 8),
               Text(
-                'Live calls',
-                style: Theme.of(
-                  context,
-                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+                'Live Calls',
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
               ),
             ],
           ),
           const SizedBox(height: 10),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                for (final call in calls)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: _CallLineChip(
-                      call: call,
-                      selected: call.id == selectedCallId,
-                      onTap: () => onSwitch(call.id),
-                    ),
+          Column(
+            children: [
+              for (final call in calls)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _MultiCallCard(
+                    call: call,
+                    selected: call.id == selectedCallId,
+                    onTap: () => onSwitch(call.id),
                   ),
-              ],
-            ),
+                ),
+            ],
           ),
         ],
       ),
@@ -516,8 +518,8 @@ class _MultiCallTray extends StatelessWidget {
   }
 }
 
-class _CallLineChip extends StatelessWidget {
-  const _CallLineChip({
+class _MultiCallCard extends ConsumerWidget {
+  const _MultiCallCard({
     required this.call,
     required this.selected,
     required this.onTap,
@@ -534,96 +536,185 @@ class _CallLineChip extends StatelessWidget {
     return at > 0 ? value.substring(0, at) : value;
   }
 
-  String get _label {
+  static String _formatDuration(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    final h = d.inHours;
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+
+  String _label() {
     return switch (call.state) {
-      CallState.incomingRinging => 'Incoming',
-      CallState.outgoingRinging => 'Calling',
-      CallState.active => call.held ? 'On hold' : 'Active',
+      CallState.active => call.held
+          ? 'On hold'
+          : (call.startedAt != null
+              ? 'Active • ${_formatDuration(DateTime.now().difference(call.startedAt!))}'
+              : 'Active'),
+      CallState.incomingRinging => 'Incoming...',
+      CallState.outgoingRinging => 'Calling...',
       CallState.ended => 'Ended',
       CallState.idle => 'Idle',
     };
   }
 
-  IconData get _icon {
-    return switch (call.state) {
-      CallState.incomingRinging => Icons.call_received,
-      CallState.outgoingRinging => Icons.call_made,
-      CallState.active => call.held ? Icons.pause : Icons.call,
-      CallState.ended => Icons.call_end,
-      CallState.idle => Icons.phone_disabled,
-    };
-  }
-
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     final bp = Theme.of(context).bp;
-    final color = switch (call.state) {
+    final ua = ref.read(sipUserAgentProvider);
+
+    final statusColor = switch (call.state) {
       CallState.active => call.held ? bp.holdingCall : bp.activeCall,
       CallState.incomingRinging ||
       CallState.outgoingRinging => bp.presenceRinging,
       CallState.ended => bp.hangup,
       CallState.idle => scheme.outline,
     };
-    final foreground = selected ? scheme.onPrimary : scheme.onSurface;
-    final canTap = !selected || call.held;
-    final tooltip = selected
-        ? (call.held ? 'Resume $_name' : 'Current call')
-        : 'Switch to $_name';
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: selected ? scheme.primary : scheme.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: BorderSide(color: selected ? scheme.primary : color),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: canTap ? onTap : null,
-          child: SizedBox(
-            width: 152,
-            height: 58,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: Row(
+
+    final cardBg = selected
+        ? scheme.primaryContainer.withValues(alpha: 0.35)
+        : scheme.surfaceContainerHigh.withValues(alpha: 0.5);
+
+    final borderSide = selected
+        ? BorderSide(color: scheme.primary, width: 1.5)
+        : BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.3));
+
+    return Material(
+      color: cardBg,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: borderSide,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              // Status Indicator (Colored Circle) and Avatar
+              Stack(
+                alignment: Alignment.bottomRight,
                 children: [
-                  Icon(
-                    _icon,
-                    size: 18,
-                    color: selected ? scheme.onPrimary : color,
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor: scheme.surfaceContainerHighest,
+                    child: Text(
+                      _name.isNotEmpty ? _name[0].toUpperCase() : '?',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                    ),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelLarge
-                              ?.copyWith(
-                                color: foreground,
-                                fontWeight: FontWeight.w700,
-                              ),
-                        ),
-                        Text(
-                          _label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall
-                              ?.copyWith(
-                                color: foreground.withValues(alpha: 0.78),
-                              ),
-                        ),
-                      ],
+                  Container(
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      color: statusColor,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: scheme.surface, width: 1.5),
                     ),
                   ),
                 ],
               ),
-            ),
+              const SizedBox(width: 12),
+              // Name and State Info
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      _name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: selected ? scheme.primary : scheme.onSurface,
+                          ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _label(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Direct Actions on this Call
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (call.state == CallState.incomingRinging) ...[
+                    // Answer
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                        backgroundColor: bp.answer,
+                        padding: const EdgeInsets.all(6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      icon: const Icon(Icons.call, size: 16, color: Colors.white),
+                      onPressed: () => ua.answer(call.id),
+                    ),
+                    const SizedBox(width: 8),
+                    // Decline
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                        backgroundColor: bp.hangup,
+                        padding: const EdgeInsets.all(6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      icon: const Icon(Icons.call_end, size: 16, color: Colors.white),
+                      onPressed: () => ua.hangup(call.id),
+                    ),
+                  ] else if (call.state == CallState.active) ...[
+                    // Hold / Resume
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                        backgroundColor: call.held ? bp.activeCall : bp.holdingCall,
+                        padding: const EdgeInsets.all(6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      icon: Icon(call.held ? Icons.play_arrow : Icons.pause, size: 16, color: Colors.white),
+                      onPressed: () => ua.setHold(call.id, !call.held),
+                    ),
+                    const SizedBox(width: 8),
+                    // Hangup
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                        backgroundColor: bp.hangup,
+                        padding: const EdgeInsets.all(6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      icon: const Icon(Icons.call_end, size: 16, color: Colors.white),
+                      onPressed: () => ua.hangup(call.id),
+                    ),
+                  ] else if (call.state == CallState.outgoingRinging) ...[
+                    // Hangup / Cancel
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                        backgroundColor: bp.hangup,
+                        padding: const EdgeInsets.all(6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      icon: const Icon(Icons.call_end, size: 16, color: Colors.white),
+                      onPressed: () => ua.hangup(call.id),
+                    ),
+                  ],
+                ],
+              ),
+            ],
           ),
         ),
       ),

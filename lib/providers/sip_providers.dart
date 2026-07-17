@@ -207,6 +207,19 @@ final callEventsProvider = StreamProvider<SipCall>((ref) {
   return ua.callStream;
 });
 
+class CallPageCountNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  void increment() => state = state + 1;
+  void decrement() => state = (state - 1).clamp(0, 99);
+}
+
+/// Tracks the number of active CallPage screens on the Navigator stack.
+final callPageCountProvider = NotifierProvider<CallPageCountNotifier, int>(
+  CallPageCountNotifier.new,
+);
+
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------

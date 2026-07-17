@@ -45,6 +45,33 @@ class _HomePageState extends ConsumerState<HomePage> {
     final canCall = reg == RegistrationState.registered;
     final isWide = MediaQuery.of(context).size.width >= _wideBreakpoint;
 
+    // Determine if there is any active or held call to display Return to Call FAB
+    final recents = ref.watch(callsProvider).recents;
+    SipCall? activeCall;
+    for (final call in recents) {
+      if (call.state == CallState.active ||
+          call.state == CallState.incomingRinging ||
+          call.state == CallState.outgoingRinging) {
+        activeCall = call;
+        break;
+      }
+    }
+
+    final returnFab = activeCall != null
+        ? FloatingActionButton.extended(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  settings: const RouteSettings(name: 'call'),
+                  builder: (_) => CallPage(callId: activeCall!.id),
+                ),
+              );
+            },
+            icon: const Icon(Icons.call_rounded),
+            label: const Text('Return to call'),
+          )
+        : null;
+
     // Push the call page when a new call needs UI.
     ref.listen<AsyncValue<SipCall>>(callEventsProvider, (_, next) {
       next.whenData(_maybeNavigateToCall);
@@ -87,6 +114,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             ],
           ),
         ),
+        floatingActionButton: returnFab,
       );
     }
 
@@ -122,7 +150,10 @@ class _HomePageState extends ConsumerState<HomePage> {
       });
     }
 
-    return Scaffold(body: SafeArea(child: sidebar));
+    return Scaffold(
+      body: SafeArea(child: sidebar),
+      floatingActionButton: returnFab,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -214,7 +245,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         call.state != CallState.active) {
       return;
     }
-    if (ModalRoute.of(context)?.settings.name == 'call') return;
+    if (ref.read(callPageCountProvider) > 0) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         settings: const RouteSettings(name: 'call'),
